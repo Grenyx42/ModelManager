@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Ui
 import qs.Commons
@@ -11,6 +12,12 @@ Panel {
   id: root
   moduleName: "wade.modelmanager"
   ipcTarget: "wade.modelmanager"
+
+  // omarchy-shell inherits Hyprland's session environment, not whatever PATH
+  // an interactive terminal has after activating the repo's venv - so the
+  // bare command "modelmanager" isn't reliably found. Use the venv binary's
+  // absolute path instead.
+  readonly property string mmBin: Quickshell.env("HOME") + "/dev/ModelManager/.venv/bin/modelmanager"
 
   property var models: []
   property var systemNames: []
@@ -31,13 +38,13 @@ Panel {
 
   function ensure(name) {
     if (ensureProc.running) return
-    ensureProc.command = ["modelmanager", "ensure", name]
+    ensureProc.command = [root.mmBin, "ensure", name]
     ensureProc.running = true
   }
 
   function stopModel(name) {
     if (stopProc.running) return
-    stopProc.command = ["modelmanager", "stop", name]
+    stopProc.command = [root.mmBin, "stop", name]
     stopProc.running = true
   }
 
@@ -45,7 +52,7 @@ Panel {
     if (logsProc.running) return
     detailLabel = "logs: " + name
     detailText = "loading..."
-    logsProc.command = ["modelmanager", "logs", name, "--lines", "80"]
+    logsProc.command = [root.mmBin, "logs", name, "--lines", "80"]
     logsProc.running = true
   }
 
@@ -53,7 +60,7 @@ Panel {
     if (statsProc.running) return
     detailLabel = "stats: " + system
     detailText = "loading..."
-    statsProc.command = ["modelmanager", "stats", system]
+    statsProc.command = [root.mmBin, "stats", system]
     statsProc.running = true
   }
 
@@ -94,7 +101,7 @@ Panel {
 
   Process {
     id: listProc
-    command: ["modelmanager", "list"]
+    command: [root.mmBin, "list"]
     stdout: StdioCollector {
       id: listOut
       waitForEnd: true
@@ -109,7 +116,7 @@ Panel {
 
   Process {
     id: systemsProc
-    command: ["modelmanager", "systems"]
+    command: [root.mmBin, "systems"]
     stdout: StdioCollector {
       id: systemsOut
       waitForEnd: true
