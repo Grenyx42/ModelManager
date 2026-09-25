@@ -1,0 +1,60 @@
+{
+  "systems": {
+    "sleek": { "os": "linux", "control": "local" },
+    "monolith": { "os": "windows", "control": "ssh", "ssh_host": "monolith" },
+    "coder": { "os": "windows", "control": "ssh", "ssh_host": "coder" }
+  },
+  "gpu_groups": {
+    "sleek-gpu0": { "system": "sleek" },
+    "monolith-gpu0": { "system": "monolith" }
+  },
+  "engines": {
+    "ollama-sleek": {
+      "system": "sleek",
+      "type": "ollama",
+      "base_url": "http://localhost:11434"
+    },
+    "llamacpp-buildA": {
+      "system": "sleek",
+      "type": "llama.cpp",
+      "binary": "/opt/llamacpp-buildA/llama-server"
+    },
+    "llamacpp-monolith-b": {
+      "system": "monolith",
+      "type": "llama.cpp",
+      "binary": "C:\\engines\\buildB\\llama-server.exe"
+    }
+  },
+  "models": {
+    "nomic-embed": {
+      "pinned": true,
+      "candidates": [
+        {
+          "engine": "ollama-sleek",
+          "model_ref": "nomic-embed-text",
+          "port": 11434,
+          "gpu_group": "sleek-gpu0",
+          "ollama_task": "embed"
+        }
+      ]
+    },
+    "qwen-72b": {
+      "idle_timeout_seconds": 900,
+      "candidates": [
+        {
+          "engine": "llamacpp-buildA",
+          "model_path": "/models/qwen2.5-72b-q4.gguf",
+          "port": 8081,
+          "args": ["--ctx-size", "8192"],
+          "gpu_group": "sleek-gpu0"
+        },
+        {
+          "engine": "llamacpp-monolith-b",
+          "model_path": "D:\\models\\qwen2.5-72b-q4.gguf",
+          "port": 8081,
+          "gpu_group": "monolith-gpu0"
+        }
+      ]
+    }
+  }
+}

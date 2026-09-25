@@ -1,0 +1,13 @@
+[Unit]
+Description=ModelManager coordinator (LLM engine manager)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/modelmanager serve --host 127.0.0.1 --port 8778
+Restart=on-failure
+RestartSec=2
+Environment=MODELMANAGER_REGISTRY=%h/dev/ModelManager/registry.json
+
+[Install]
+WantedBy=default.target
