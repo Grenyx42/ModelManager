@@ -13,6 +13,14 @@ Panel {
   moduleName: "wade.modelmanager"
   ipcTarget: "wade.modelmanager"
 
+  // The bar host sizes our slot in the row from OUR implicitWidth/Height -
+  // Item defaults those to 0, and BarIconButton's anchors.fill: parent then
+  // has nothing to fill, so the icon exists but paints at zero size. Every
+  // working bar-widget (e.g. dell-power-profiles) derives these from its
+  // own button; we do the same.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   // omarchy-shell inherits Hyprland's session environment, not whatever PATH
   // an interactive terminal has after activating the repo's venv - so the
   // bare command "modelmanager" isn't reliably found. Use the venv binary's
