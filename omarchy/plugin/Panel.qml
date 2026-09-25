@@ -162,7 +162,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "🧠 " + root.runningCount
+    text: "🧠"
     slotSize: Style.bar.iconSlot
     tooltipText: root.lastError !== "" ? root.lastError : (root.runningCount + " model(s) running")
     onPressed: function(b) { root.toggle() }
