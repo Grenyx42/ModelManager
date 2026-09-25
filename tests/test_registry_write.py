@@ -7,6 +7,15 @@ from modelmanager.coordinator.state import StateStore
 from tests.test_manager import FakeAdapter, FakeAdapterRegistry, build_registry
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_state(monkeypatch, tmp_path):
+    # reload_from_disk() auto-starts pinned models (build_registry()'s
+    # "nomic-embed") via the real AdapterRegistry/LlamaCppAdapter/LocalRunner
+    # on any test here that doesn't swap in a FakeAdapterRegistry, which
+    # otherwise writes real pid/log files under ~/.local/state/modelmanager.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+
 def make_manager_with_path(tmp_path):
     registry = build_registry()
     path = tmp_path / "registry.json"

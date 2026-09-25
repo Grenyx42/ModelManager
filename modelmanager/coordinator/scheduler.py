@@ -30,11 +30,12 @@ class Scheduler:
             await asyncio.sleep(self.interval_seconds)
 
     def sweep_once(self) -> None:
+        self.manager.state.purge_all_expired_leases()
         for name, definition in self.manager.registry.models.items():
             if definition.pinned or definition.idle_timeout_seconds is None:
                 continue
             state = self.manager.state.get(name)
-            if not state.is_active:
+            if not state.is_active or state.is_busy():
                 continue
             idle = state.idle_seconds()
             if idle is not None and idle >= definition.idle_timeout_seconds:

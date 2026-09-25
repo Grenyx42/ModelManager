@@ -47,13 +47,36 @@ def ensure_model(name: str, request: Request):
     return {"host": result.host, "port": result.port}
 
 
-@router.post("/v1/models/{name}/stop")
-def stop_model(name: str, request: Request):
+@router.post("/v1/models/{name}/acquire")
+def acquire_model(name: str, request: Request, ttl_seconds: float | None = None):
     manager = _manager(request)
     try:
-        manager.stop(name)
+        result = manager.acquire(name, ttl_seconds)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"host": result.host, "port": result.port, "lease_id": result.lease_id, "expires_in": result.expires_in}
+
+
+@router.post("/v1/models/{name}/release")
+def release_model(name: str, request: Request, lease_id: str | None = None):
+    manager = _manager(request)
+    try:
+        return manager.release(name, lease_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/v1/models/{name}/stop")
+def stop_model(name: str, request: Request, force: bool = False):
+    manager = _manager(request)
+    try:
+        manager.stop(name, force=force)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "stopped"}
 
 
@@ -182,5 +205,8 @@ def status_summary(request: Request):
     return {
         "running_count": len(running),
         "total_count": len(models),
-        "running": [{"name": m["name"], "engine": (m["candidate"] or {}).get("engine")} for m in running],
+        "running": [
+            {"name": m["name"], "engine": (m["candidate"] or {}).get("engine"), "in_use": m["in_use"]}
+            for m in running
+        ],
     }

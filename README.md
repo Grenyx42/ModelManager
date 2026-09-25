@@ -50,8 +50,10 @@ Adjust `ExecStart`/`MODELMANAGER_REGISTRY` in that unit if you're not using a
 
 ```bash
 modelmanager list                 # all model definitions + live status
-modelmanager ensure qwen-72b      # start/swap as needed, prints {"host","port"}
-modelmanager stop qwen-72b
+modelmanager ensure qwen-72b      # start/swap as needed, prints {"host","port"} - no usage lease
+modelmanager acquire qwen-72b --ttl 300   # like ensure, but takes a lease: can't be evicted/swapped while held
+modelmanager release qwen-72b             # end a lease (or all leases if --lease-id omitted)
+modelmanager stop qwen-72b                # --force to stop even if a lease is held
 modelmanager logs qwen-72b --lines 100
 modelmanager systems              # configured systems
 modelmanager stats monolith       # GPU/VRAM via nvidia-smi (local or SSH)
@@ -67,14 +69,24 @@ first to learn the systems/engines/gpu_groups/models schema (fields, types,
 required/optional, examples) and every endpoint, then `POST /v1/{resource}/{name}`
 to create or update an entry directly - no need to hand-edit `registry.json`.
 Writes validate the whole registry (including cross-references) before
-accepting anything and persist atomically; an invalid write changes nothing.
+accepting anything and persist atomically; an invalid write returns a
+specific 422 error and changes nothing.
 
 There's no delete endpoint by design: hand-edit `registry.json` to remove an
 entry, then `modelmanager reload` to apply it without restarting the
 coordinator. Reload stops any currently-active model whose definition was
 removed, drops cached adapters so changed engine/system config takes effect,
 and auto-starts anything newly pinned.
-and returns a specific 422 error.
+
+**Acquire/release vs ensure:** `ensure` just makes sure a model is loaded and
+refreshes its idle clock - a concurrent idle sweep or another model's request
+can still evict it once `idle_timeout_seconds` passes, even mid-use. `acquire`
+additionally takes a time-boxed lease (default 300s, renewable by acquiring
+again) that makes the model un-evictable and un-swappable while held, for
+callers doing a longer piece of work; `release` ends the lease and starts the
+idle clock fresh from that moment instead of from the original acquire.
+Leases expire on their own if never released, so a crashed caller can't
+permanently pin a GPU slot.
 
 ### Windows boxes
 

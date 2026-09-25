@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from ..adapters.factory import AdapterRegistry
-from ..config import EngineConfig, GpuGroupConfig, ModelDefinition, Registry, SystemConfig
+from ..config import Candidate, EngineConfig, GpuGroupConfig, ModelDefinition, Registry, SystemConfig
 from .state import StateStore
+
+DEFAULT_LEASE_TTL_SECONDS = 300
 
 
 class NotFoundError(Exception):
@@ -35,6 +38,15 @@ class EnsureResult:
     candidate_index: int
 
 
+@dataclass
+class AcquireResult:
+    host: str
+    port: int
+    candidate_index: int
+    lease_id: str
+    expires_in: float
+
+
 class Manager:
     def __init__(self, registry: Registry, state: StateStore | None = None, registry_path: Path | None = None):
         self.registry = registry
@@ -44,6 +56,37 @@ class Manager:
         self._write_lock = threading.Lock()
 
     def ensure(self, name: str) -> EnsureResult:
+        candidate, idx = self._ensure_loaded(name)
+        self.state.touch(name)
+        return self._result(candidate, idx)
+
+    def acquire(self, name: str, ttl_seconds: float | None = None) -> AcquireResult:
+        """Like ensure(), but also takes a time-boxed lease marking the model
+        as actively in use: while any lease is held, it can never be
+        auto-evicted or swapped out for another model, regardless of
+        idle_timeout_seconds. Call release() when done, or let the lease
+        expire (a safety net for a caller that crashes without releasing)."""
+        candidate, idx = self._ensure_loaded(name)
+        ttl = ttl_seconds if ttl_seconds is not None else DEFAULT_LEASE_TTL_SECONDS
+        lease_id = uuid.uuid4().hex
+        self.state.get(name).add_lease(lease_id, ttl)
+        self.state.touch(name)
+        result = self._result(candidate, idx)
+        return AcquireResult(host=result.host, port=result.port, candidate_index=idx, lease_id=lease_id, expires_in=ttl)
+
+    def release(self, name: str, lease_id: str | None = None) -> dict:
+        if name not in self.registry.models:
+            raise NotFoundError(f"unknown model {name!r}")
+        model_state = self.state.get(name)
+        if lease_id is None:
+            released = model_state.clear_leases()
+        else:
+            released = 1 if model_state.remove_lease(lease_id) else 0
+        if released:
+            self.state.touch(name)  # idle countdown starts from the moment of release, not the original acquire
+        return {"released": released, "remaining_leases": len(model_state.leases)}
+
+    def _ensure_loaded(self, name: str) -> tuple[Candidate, int]:
         definition = self.registry.models.get(name)
         if definition is None:
             raise NotFoundError(f"unknown model {name!r}")
@@ -54,8 +97,7 @@ class Manager:
             adapter = self.adapters.get(candidate.engine)
             status = adapter.status(name, candidate)
             if status.running:
-                self.state.touch(name)
-                return self._result(candidate, model_state.active_candidate_index)
+                return candidate, model_state.active_candidate_index
             self.state.set_active(name, None)
 
         last_error: str | None = None
@@ -63,10 +105,16 @@ class Manager:
             occupant = self.state.find_active_in_gpu_group(candidate.gpu_group, self.registry)
             if occupant is not None and occupant != name:
                 occupant_def = self.registry.models[occupant]
+                occupant_state = self.state.get(occupant)
                 if occupant_def.pinned:
                     last_error = f"gpu_group {candidate.gpu_group!r} occupied by pinned model {occupant!r}"
                     continue
-                occupant_state = self.state.get(occupant)
+                if occupant_state.is_busy():
+                    last_error = (
+                        f"gpu_group {candidate.gpu_group!r} is in active use by {occupant!r} "
+                        f"({len(occupant_state.leases)} lease(s) held) - release it first"
+                    )
+                    continue
                 idle_timeout = occupant_def.idle_timeout_seconds
                 idle_secs = occupant_state.idle_seconds()
                 free_to_evict = (
@@ -83,17 +131,21 @@ class Manager:
             adapter = self.adapters.get(candidate.engine)
             adapter.start(name, candidate)
             self.state.set_active(name, idx)
-            return self._result(candidate, idx)
+            return candidate, idx
 
         raise ConflictError(last_error or f"no available candidate for {name!r}")
 
-    def stop(self, name: str) -> None:
+    def stop(self, name: str, force: bool = False) -> None:
         definition = self.registry.models.get(name)
         if definition is None:
             raise NotFoundError(f"unknown model {name!r}")
         model_state = self.state.get(name)
         if not model_state.is_active:
             return
+        if not force and model_state.is_busy():
+            raise ConflictError(
+                f"{name!r} has {len(model_state.leases)} active lease(s); pass force=true to stop anyway"
+            )
         candidate = definition.candidates[model_state.active_candidate_index]
         adapter = self.adapters.get(candidate.engine)
         adapter.stop(name, candidate)
@@ -111,6 +163,8 @@ class Manager:
             "active": model_state.is_active,
             "last_used": model_state.last_used.isoformat() if model_state.last_used else None,
             "idle_seconds": model_state.idle_seconds(),
+            "in_use": model_state.is_busy(),
+            "lease_count": len(model_state.leases),
             "candidate": None,
         }
         if model_state.is_active:
@@ -190,7 +244,7 @@ class Manager:
                 if name in new_registry.models:
                     continue
                 if self.state.get(name).is_active:
-                    self.stop(name)
+                    self.stop(name, force=True)  # its definition is gone; no lease can hold it open
                     stopped.append(name)
 
             for section in ("systems", "engines", "gpu_groups", "models"):

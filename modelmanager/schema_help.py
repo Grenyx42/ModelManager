@@ -50,13 +50,23 @@ def build_help() -> dict:
             "It is configured by four kinds of named entries - systems, engines, gpu_groups, and "
             "models - that reference each other by name. Create them in that order (a model's "
             "candidates reference engines and gpu_groups that must already exist), then call "
-            "POST /v1/models/{name}/ensure to actually load a model and get back a host:port."
+            "POST /v1/models/{name}/ensure (or /acquire) to actually load a model and get back "
+            "a host:port."
         ),
         "concepts": {
             "system": "A machine the coordinator can control: itself (control='local') or a remote box over SSH (control='ssh').",
             "engine": "One running-or-startable backend instance on a system: an Ollama server, or one specific llama.cpp build.",
-            "gpu_group": "One exclusive-use GPU slot on a system. Only one model may be active per gpu_group; requesting a second swaps out the first once it's idle.",
+            "gpu_group": "One exclusive-use GPU slot on a system. Only one model may be active per gpu_group; requesting a second swaps out the first once it's idle or its lease is released.",
             "model": "A logical model name callers ask for. Has one or more 'candidates' (engine+gpu_group+path combos) that can serve it, tried in order.",
+            "lease": (
+                "A time-boxed claim (from /acquire) that a model is actively in use right now. "
+                "While any lease is held, that model can never be auto-evicted by the idle sweep "
+                "or swapped out by another model's ensure()/acquire() call, no matter what "
+                "idle_timeout_seconds says. Leases expire on their own (default 300s) if never "
+                "released, so a crashed caller can't permanently pin a GPU slot. Use ensure() "
+                "instead of acquire() for fire-and-forget prewarming where you don't need that "
+                "protection."
+            ),
         },
         "schema": {
             "system": {
@@ -130,8 +140,31 @@ def build_help() -> dict:
             {"method": "GET", "path": "/v1/models", "description": "list all model definitions with live status"},
             {"method": "GET", "path": "/v1/models/{name}", "description": "get one model definition's live status"},
             {"method": "POST", "path": "/v1/models/{name}", "description": "create or update a model definition. Body: the model schema above. Every candidate's engine and gpu_group must already exist.", "body_schema": "model"},
-            {"method": "POST", "path": "/v1/models/{name}/ensure", "description": "load this model (starting/swapping as needed) and return {host, port}"},
-            {"method": "POST", "path": "/v1/models/{name}/stop", "description": "stop this model if running"},
+            {"method": "POST", "path": "/v1/models/{name}/ensure", "description": "load this model (starting/swapping as needed) and return {host, port}. Does not take a lease - a concurrent idle sweep or another model's request can still evict it once idle_timeout_seconds passes."},
+            {
+                "method": "POST",
+                "path": "/v1/models/{name}/acquire",
+                "description": (
+                    "like ensure(), but also takes a usage lease so this model can't be evicted or "
+                    "swapped out while you hold it, regardless of idle_timeout_seconds. Returns "
+                    "{host, port, lease_id, expires_in}. Optional query param ttl_seconds (default 300) "
+                    "sets how long the lease lasts if never released - a safety net if your process crashes."
+                ),
+            },
+            {
+                "method": "POST",
+                "path": "/v1/models/{name}/release",
+                "description": (
+                    "end a lease taken with acquire(); the idle-timeout clock starts fresh from this "
+                    "moment. Optional query param lease_id releases just that lease; omit it to release "
+                    "every lease on this model. Safe to call on an unknown/already-expired lease_id (no-op)."
+                ),
+            },
+            {
+                "method": "POST",
+                "path": "/v1/models/{name}/stop",
+                "description": "stop this model if running. 409s if a lease is currently held; pass ?force=true to stop anyway.",
+            },
             {"method": "GET", "path": "/v1/models/{name}/logs", "description": "recent logs for this model (?lines=200)"},
             {"method": "GET", "path": "/v1/status/summary", "description": "compact running-model summary, for dashboards/bar widgets"},
         ],

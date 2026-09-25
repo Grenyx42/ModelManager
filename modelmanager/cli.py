@@ -43,9 +43,26 @@ def cmd_ensure(args) -> int:
         return _print_response(client.post(f"/v1/models/{args.name}/ensure"))
 
 
-def cmd_stop(args) -> int:
+def cmd_acquire(args) -> int:
+    params = {}
+    if args.ttl is not None:
+        params["ttl_seconds"] = args.ttl
     with _client(args) as client:
-        return _print_response(client.post(f"/v1/models/{args.name}/stop"))
+        return _print_response(client.post(f"/v1/models/{args.name}/acquire", params=params))
+
+
+def cmd_release(args) -> int:
+    params = {}
+    if args.lease_id is not None:
+        params["lease_id"] = args.lease_id
+    with _client(args) as client:
+        return _print_response(client.post(f"/v1/models/{args.name}/release", params=params))
+
+
+def cmd_stop(args) -> int:
+    params = {"force": "true"} if args.force else {}
+    with _client(args) as client:
+        return _print_response(client.post(f"/v1/models/{args.name}/stop", params=params))
 
 
 def cmd_logs(args) -> int:
@@ -115,12 +132,25 @@ def main() -> None:
     sub.add_parser("summary", help="compact running-model summary").set_defaults(func=cmd_summary)
     sub.add_parser("systems", help="list configured systems").set_defaults(func=cmd_systems)
 
-    p_ensure = sub.add_parser("ensure", help="ensure a model is loaded")
+    p_ensure = sub.add_parser("ensure", help="ensure a model is loaded (no usage lease)")
     p_ensure.add_argument("name")
     p_ensure.set_defaults(func=cmd_ensure)
 
+    p_acquire = sub.add_parser(
+        "acquire", help="load a model and take a usage lease on it, so it can't be evicted/swapped while held"
+    )
+    p_acquire.add_argument("name")
+    p_acquire.add_argument("--ttl", type=float, default=None, help="lease lifetime in seconds (default 300)")
+    p_acquire.set_defaults(func=cmd_acquire)
+
+    p_release = sub.add_parser("release", help="release a usage lease taken with `acquire`")
+    p_release.add_argument("name")
+    p_release.add_argument("--lease-id", default=None, help="omit to release all leases on this model")
+    p_release.set_defaults(func=cmd_release)
+
     p_stop = sub.add_parser("stop", help="stop a running model")
     p_stop.add_argument("name")
+    p_stop.add_argument("--force", action="store_true", help="stop even if a usage lease is held")
     p_stop.set_defaults(func=cmd_stop)
 
     p_logs = sub.add_parser("logs", help="show recent logs for a model")

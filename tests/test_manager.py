@@ -131,3 +131,97 @@ def test_list_models_reports_status():
     statuses = {m["name"]: m for m in manager.list_models()}
     assert statuses["nomic-embed"]["active"] is True
     assert statuses["model-b"]["active"] is False
+
+
+def test_acquire_returns_lease_id_and_marks_in_use():
+    manager, adapter = make_manager()
+    result = manager.acquire("model-b")
+
+    assert result.port == 2
+    assert result.lease_id
+    status = manager.status("model-b")
+    assert status["in_use"] is True
+    assert status["lease_count"] == 1
+
+
+def test_acquire_blocks_swap_even_past_idle_timeout():
+    manager, adapter = make_manager()
+    manager.acquire("model-b")
+
+    state = manager.state.get("model-b")
+    from datetime import datetime, timedelta, timezone
+
+    state.last_used = datetime.now(timezone.utc) - timedelta(seconds=120)  # past idle_timeout_seconds=60
+
+    with pytest.raises(ConflictError, match="active use"):
+        manager.ensure("nomic-embed")
+    assert adapter.stop_calls == []
+
+
+def test_release_then_idle_allows_swap():
+    manager, adapter = make_manager()
+    result = manager.acquire("model-b")
+    manager.release("model-b", result.lease_id)
+
+    state = manager.state.get("model-b")
+    from datetime import datetime, timedelta, timezone
+
+    state.last_used = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    manager.ensure("nomic-embed")
+    assert adapter.stop_calls == ["model-b"]
+
+
+def test_release_unknown_lease_id_is_a_noop():
+    manager, _ = make_manager()
+    manager.acquire("model-b")
+    result = manager.release("model-b", "not-a-real-lease")
+    assert result == {"released": 0, "remaining_leases": 1}
+
+
+def test_release_with_no_lease_id_clears_all():
+    manager, _ = make_manager()
+    manager.acquire("model-b")
+    manager.acquire("model-b")
+    result = manager.release("model-b")
+    assert result == {"released": 2, "remaining_leases": 0}
+    assert manager.status("model-b")["in_use"] is False
+
+
+def test_release_unknown_model_raises():
+    manager, _ = make_manager()
+    with pytest.raises(NotFoundError):
+        manager.release("does-not-exist")
+
+
+def test_stop_raises_conflict_when_leased():
+    manager, adapter = make_manager()
+    manager.acquire("model-b")
+    with pytest.raises(ConflictError):
+        manager.stop("model-b")
+    assert adapter.stop_calls == []
+
+
+def test_stop_force_true_stops_leased_model():
+    manager, adapter = make_manager()
+    manager.acquire("model-b")
+    manager.stop("model-b", force=True)
+    assert adapter.stop_calls == ["model-b"]
+    assert manager.status("model-b")["in_use"] is False
+
+
+def test_acquire_lease_expires_and_allows_swap(monkeypatch):
+    manager, adapter = make_manager()
+    manager.acquire("model-b", ttl_seconds=1)
+
+    state = manager.state.get("model-b")
+    from datetime import datetime, timedelta, timezone
+
+    state.last_used = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    import modelmanager.coordinator.state as state_module
+
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: 1e12)
+
+    manager.ensure("nomic-embed")
+    assert adapter.stop_calls == ["model-b"]
