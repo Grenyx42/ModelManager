@@ -104,6 +104,13 @@ def cmd_reload(args) -> int:
         return _print_response(client.post("/v1/config/reload"))
 
 
+def cmd_deploy_agent(args) -> int:
+    params = {"force": "true"} if args.force else {}
+    path = f"/v1/systems/{args.system}/deploy-agent" if args.system else "/v1/deploy-agent"
+    with _client(args) as client:
+        return _print_response(client.post(path, params=params))
+
+
 def cmd_put(args) -> int:
     raw = args.json
     if raw.startswith("@"):
@@ -167,6 +174,14 @@ def main() -> None:
     sub.add_parser(
         "reload", help="re-read registry.json from disk and apply it live (e.g. after hand-editing a delete)"
     ).set_defaults(func=cmd_reload)
+
+    p_deploy = sub.add_parser(
+        "deploy-agent",
+        help="upload scripts/windows/agent.ps1 to windows/ssh systems if it changed (also runs on coordinator startup)",
+    )
+    p_deploy.add_argument("system", nargs="?", default=None, help="omit to deploy to every windows/ssh system")
+    p_deploy.add_argument("--force", action="store_true", help="re-upload even if unchanged")
+    p_deploy.set_defaults(func=cmd_deploy_agent)
 
     p_put = sub.add_parser("put", help="create or update a systems/engines/gpu_groups/models entry")
     p_put.add_argument("resource", choices=["systems", "engines", "gpu_groups", "models"])

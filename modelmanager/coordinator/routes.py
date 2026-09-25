@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import gpu_stats
+from .. import agent_deploy, gpu_stats
 from ..adapters.factory import build_runner
 from ..schema_help import build_help
 from .manager import ConflictError, NotFoundError, RegistryValidationError, ReloadUnavailableError
@@ -181,6 +181,23 @@ def upsert_gpu_group(name: str, body: dict, request: Request):
     except RegistryValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result.model_dump()
+
+
+@router.post("/v1/systems/{name}/deploy-agent")
+def deploy_agent_one(name: str, request: Request, force: bool = False):
+    registry = _manager(request).registry
+    if name not in registry.systems:
+        raise HTTPException(status_code=404, detail=f"unknown system {name!r}")
+    try:
+        return agent_deploy.deploy_if_needed(name, registry.systems[name], force=force)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/v1/deploy-agent")
+def deploy_agent_all(request: Request, force: bool = False):
+    registry = _manager(request).registry
+    return agent_deploy.deploy_all(registry, force=force)
 
 
 @router.get("/v1/systems/{name}/stats")

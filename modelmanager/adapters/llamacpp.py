@@ -3,13 +3,11 @@ from __future__ import annotations
 import base64
 import json
 
-from .. import paths
+from .. import paths, remote_paths
 from ..config import Candidate, EngineConfig, SystemConfig
 from ..runners.local import LocalRunner
 from ..runners.ssh import SSHRunner
 from .base import AdapterStatus, EngineAdapter
-
-AGENT_SCRIPT_PATH = r"C:\ModelManager\agent.ps1"
 
 
 def _b64(payload: dict) -> str:
@@ -81,8 +79,9 @@ class LlamaCppAdapter(EngineAdapter):
 
     def _invoke(self, action: str, payload: dict):
         assert isinstance(self.runner, SSHRunner)
+        script_path = remote_paths.windows_agent_script_path(self.runner)
         cmd = (
-            f'powershell -NoProfile -ExecutionPolicy Bypass -File {AGENT_SCRIPT_PATH} '
+            f'powershell -NoProfile -ExecutionPolicy Bypass -File {script_path} '
             f'-Action {action} -PayloadB64 {_b64(payload)}'
         )
         return self.runner.run_shell(cmd, timeout=60)

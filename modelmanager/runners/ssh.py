@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from .base import CommandResult, Runner
 
@@ -20,5 +21,11 @@ class SSHRunner(Runner):
 
     def run_shell(self, cmd: str, timeout: float | None = 30) -> CommandResult:
         full = ["ssh", *SSH_OPTS, self.host_alias, cmd]
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+        return CommandResult(proc.returncode, proc.stdout, proc.stderr)
+
+    def upload_file(self, local_path: Path, remote_path: str, timeout: float | None = 30) -> CommandResult:
+        """Copies a local file to this host via `scp`, reusing the same ~/.ssh/config alias."""
+        full = ["scp", *SSH_OPTS, str(local_path), f"{self.host_alias}:{remote_path}"]
         proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)

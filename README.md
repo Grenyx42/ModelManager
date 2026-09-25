@@ -62,6 +62,7 @@ modelmanager put models qwen-72b '{"candidates": [...]}'   # create/update an en
 modelmanager put engines my-engine @path/to/body.json      # body can also come from a file
 modelmanager config                                        # full current registry as one document
 modelmanager reload                                        # re-read registry.json from disk, apply live
+modelmanager deploy-agent [system] [--force]               # sync scripts/windows/agent.ps1 to windows/ssh boxes
 ```
 
 `GET /v1/help` is meant to be self-sufficient: any harness, agent, or script can hit it
@@ -90,10 +91,21 @@ permanently pin a GPU slot.
 
 ### Windows boxes
 
-Copy `scripts/windows/agent.ps1` to `C:\ModelManager\agent.ps1` on each
-Windows system referenced in `registry.json` with `"control": "ssh"`. Make
-sure `ssh <that-host>` already works non-interactively (key auth, no
-passphrase prompt) - `~/.ssh/config` aliases are reused as-is.
+Nothing to copy by hand: the coordinator deploys `scripts/windows/agent.ps1`
+itself to `~\.ModelManager\agent.ps1` (the SSH user's own home directory - the
+exact `C:\Users\<name>` path is resolved over SSH, never assumed) on every
+Windows system with `"control": "ssh"`, automatically and best-effort on
+every startup, skipping the upload if the file's already there unchanged.
+To push a change without restarting, or target one box:
+
+```bash
+modelmanager deploy-agent            # every windows/ssh system
+modelmanager deploy-agent monolith   # just one
+modelmanager deploy-agent monolith --force   # re-upload even if unchanged
+```
+
+Just make sure `ssh <that-host>` already works non-interactively (key auth,
+no passphrase prompt) - `~/.ssh/config` aliases are reused as-is.
 
 ### Omarchy plugin
 

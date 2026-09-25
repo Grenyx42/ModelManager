@@ -47,8 +47,10 @@ class FakeSSHRunner(SSHRunner):
 
     def run_shell(self, cmd, timeout=30):
         self.calls.append(cmd)
+        if "$env:USERPROFILE" in cmd:
+            return CommandResult(0, "C:\\Users\\wade", "")
         if "-Action start" in cmd:
-            return CommandResult(0, json.dumps({"pid": 4242, "log_path": "C:\\ModelManager\\logs\\x.log"}), "")
+            return CommandResult(0, json.dumps({"pid": 4242, "log_path": "C:\\Users\\wade\\.ModelManager\\logs\\x.log"}), "")
         if "-Action stop" in cmd:
             return CommandResult(0, json.dumps({"status": "stopped"}), "")
         if "-Action status" in cmd:
@@ -75,11 +77,15 @@ def test_llamacpp_ssh_lifecycle_invokes_agent_script():
 
     adapter.stop("qwen-72b", candidate)
 
-    start_call = runner.calls[0]
+    start_call = next(c for c in runner.calls if "-Action start" in c)
+    assert "C:\\Users\\wade\\.ModelManager\\agent.ps1" in start_call
     payload_b64 = start_call.split("-PayloadB64 ")[1]
     payload = json.loads(base64.b64decode(payload_b64))
     assert payload["model_path"] == r"D:\models\x.gguf"
     assert payload["port"] == 8081
+
+    # the home directory is resolved once over SSH and cached, not re-queried per call
+    assert sum("$env:USERPROFILE" in c for c in runner.calls) == 1
 
 
 class FakeLocalRunner(LocalRunner):

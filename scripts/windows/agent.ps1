@@ -1,6 +1,7 @@
 # ModelManager remote control helper for native Windows llama.cpp processes.
 # Invoked over SSH by modelmanager.adapters.llamacpp.LlamaCppAdapter.
-# Deploy to C:\ModelManager\agent.ps1 on each Windows GPU box.
+# Deployed to <your home folder>\.ModelManager\agent.ps1 on each Windows GPU
+# box (see modelmanager/agent_deploy.py - deployment is automatic).
 
 param(
     [Parameter(Mandatory = $true)][string]$Action,
@@ -9,7 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$root = "C:\ModelManager"
+$root = Join-Path $env:USERPROFILE ".ModelManager"
 $pidDir = Join-Path $root "pids"
 $logDir = Join-Path $root "logs"
 New-Item -ItemType Directory -Force -Path $pidDir | Out-Null

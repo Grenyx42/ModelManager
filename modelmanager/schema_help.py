@@ -131,6 +131,21 @@ def build_help() -> dict:
             {"method": "GET", "path": "/v1/systems/{name}", "description": "get one system"},
             {"method": "POST", "path": "/v1/systems/{name}", "description": "create or update a system. Body: the system schema above.", "body_schema": "system"},
             {"method": "GET", "path": "/v1/systems/{name}/stats", "description": "GPU/VRAM stats for a system (nvidia-smi, local or over SSH)"},
+            {
+                "method": "POST",
+                "path": "/v1/systems/{name}/deploy-agent",
+                "description": (
+                    "for windows/ssh systems only: upload scripts/windows/agent.ps1 to C:\\ModelManager\\agent.ps1 "
+                    "on this system over scp, but only if its content differs from what's already there. "
+                    "?force=true skips the hash check and re-uploads unconditionally. No-op (action: 'skipped') "
+                    "for local or non-windows systems."
+                ),
+            },
+            {
+                "method": "POST",
+                "path": "/v1/deploy-agent",
+                "description": "same as above, applied to every windows/ssh system in the registry. Also runs automatically (best-effort, non-blocking) whenever the coordinator starts.",
+            },
             {"method": "GET", "path": "/v1/gpu_groups", "description": "list all GPU groups"},
             {"method": "GET", "path": "/v1/gpu_groups/{name}", "description": "get one GPU group"},
             {"method": "POST", "path": "/v1/gpu_groups/{name}", "description": "create or update a GPU group. Body: the gpu_group schema above.", "body_schema": "gpu_group"},
