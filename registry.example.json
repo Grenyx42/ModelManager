@@ -1,6 +1,6 @@
 {
   "systems": {
-    "sleek": { "os": "linux", "control": "local" },
+    "sleek": { "os": "linux", "control": "local", "advertise_host": "sleek" },
     "monolith": { "os": "windows", "control": "ssh", "ssh_host": "monolith" },
     "coder": { "os": "windows", "control": "ssh", "ssh_host": "coder" }
   },

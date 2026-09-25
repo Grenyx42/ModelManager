@@ -8,7 +8,7 @@ MODELMANAGER="$REPO_DIR/.venv/bin/modelmanager"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/modelmanager"
 PID_FILE="$STATE_DIR/coordinator.pid"
 LOG_FILE="$STATE_DIR/coordinator.log"
-HOST="${MODELMANAGER_HOST:-127.0.0.1}"
+HOST="${MODELMANAGER_HOST:-0.0.0.0}"
 PORT="${MODELMANAGER_PORT:-8778}"
 
 mkdir -p "$STATE_DIR"

@@ -130,7 +130,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_serve = sub.add_parser("serve", help="run the coordinator REST service")
-    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--host", default="0.0.0.0")
     p_serve.add_argument("--port", type=int, default=8778)
     p_serve.add_argument("--reload", action="store_true")
     p_serve.set_defaults(func=cmd_serve)

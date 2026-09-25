@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/modelmanager serve --host 127.0.0.1 --port 8778
+ExecStart=%h/.local/bin/modelmanager serve --host 0.0.0.0 --port 8778
 Restart=on-failure
 RestartSec=2
 Environment=MODELMANAGER_REGISTRY=%h/dev/ModelManager/registry.json

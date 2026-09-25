@@ -30,8 +30,18 @@ pytest
 ### Run the coordinator
 
 ```bash
-modelmanager serve --port 8778
+modelmanager serve --port 8778   # binds 0.0.0.0 by default - reachable from monolith, coder, etc.
 ```
+
+Binding `0.0.0.0` means the REST API (including the write endpoints) is
+reachable by anything that can reach this box - on this setup that's the
+tailnet, gated by Tailscale itself rather than anything in this app. Pass
+`--host 127.0.0.1` instead if you ever want it local-only.
+
+`sleek`'s system entry in `registry.json` needs `"advertise_host": "sleek"`
+(its Tailscale name) for this to actually work end-to-end: without it,
+`ensure`/`acquire` on a model running locally would hand a remote caller
+back `{"host": "localhost", ...}`, which means *them*, not sleek.
 
 Or install `systemd/modelmanager.service` as a user unit so pinned models
 (e.g. an embedding model) come up automatically:
