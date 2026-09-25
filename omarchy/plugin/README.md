@@ -13,20 +13,25 @@ local REST API. No QML file talks to SSH, engines, or the registry directly.
 - The coordinator running (`modelmanager serve`, or the systemd user unit in
   `../../systemd/modelmanager.service`).
 
-## Install (manual drop-in)
+## Install / re-sync
 
 This plugin lives inside the ModelManager repo rather than its own git repo,
-so install it as a symlink rather than `omarchy plugin add`:
+so it's installed as a symlink rather than via `omarchy plugin add`:
 
 ```bash
-ln -s "$(pwd)/omarchy/plugin" ~/.config/omarchy/plugins/wade.modelmanager
-omarchy-shell shell rescanPlugins
-omarchy plugin enable wade.modelmanager
-omarchy bar move wade.modelmanager   # optional: pick where it sits
+../../scripts/install-omarchy-plugin.sh
 ```
 
-Editing `Panel.qml` afterwards hot-reloads automatically (the shell watches
-everything under `~/.config/omarchy/plugins/`).
+That symlinks `omarchy/plugin` to `~/.config/omarchy/plugins/wade.modelmanager`
+(idempotent - safe to re-run), validates the manifest, reloads
+omarchy-shell's plugin registry, and enables it. Same shape as any other
+Omarchy shell plugin (e.g. `stappmus.dell-power-profiles`). Same-day edits to
+`Panel.qml` hot-reload automatically (the shell watches everything under
+`~/.config/omarchy/plugins/`); re-run the script if the icon ever disappears
+from the bar or after a manifest change.
+
+`omarchy bar move wade.modelmanager` repositions it if you don't want it in
+the default center section.
 
 ## Settings
 
