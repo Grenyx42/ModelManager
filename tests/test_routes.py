@@ -4,6 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from modelmanager import access_log
+from modelmanager.coordinator.app import install_access_log_middleware
 from modelmanager.coordinator.manager import Manager
 from modelmanager.coordinator.routes import router
 from modelmanager.coordinator.state import StateStore
@@ -51,6 +53,34 @@ def test_create_model_via_rest_round_trip(tmp_path):
     listed = client.get("/v1/models/model-c")
     assert listed.status_code == 200
     assert listed.json()["name"] == "model-c"
+
+
+def test_access_log_middleware_records_requests(tmp_path):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.manager = Manager(build_registry(), StateStore(), registry_path=tmp_path / "registry.json")
+    app.state.system_runners = {}
+    access_log.configure()
+    install_access_log_middleware(app)
+    client = TestClient(app)
+
+    resp = client.get("/v1/models/model-b")
+    assert resp.status_code == 200
+
+    log_text = access_log.tail()
+    assert "GET /v1/models/model-b -> 200" in log_text
+    assert "ms)" in log_text
+
+
+def test_access_log_endpoint_returns_tail(tmp_path):
+    client = make_client(tmp_path)
+    access_log.configure()
+    access_log.record("1.2.3.4:5", "GET", "/v1/models", 200, 1.0)
+
+    resp = client.get("/v1/access-log", params={"lines": 10})
+
+    assert resp.status_code == 200
+    assert "1.2.3.4:5 GET /v1/models -> 200" in resp.json()["log"]
 
 
 def test_create_model_with_bad_reference_returns_422(tmp_path):

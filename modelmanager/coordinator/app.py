@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
-from .. import agent_deploy
+from .. import access_log, agent_deploy
 from ..config import default_registry_path, load_registry
 from .manager import Manager
 from .routes import router
@@ -49,9 +50,25 @@ async def lifespan(app: FastAPI):
         app.state.agent_deploy_task.cancel()
 
 
+def install_access_log_middleware(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def log_access(request: Request, call_next):
+        start = time.monotonic()
+        response = await call_next(request)
+        duration_ms = (time.monotonic() - start) * 1000
+        client = f"{request.client.host}:{request.client.port}" if request.client else "-"
+        path = request.url.path
+        if request.url.query:
+            path += "?" + request.url.query
+        access_log.record(client, request.method, path, response.status_code, duration_ms)
+        return response
+
+
 def create_app() -> FastAPI:
+    access_log.configure()
     app = FastAPI(title="ModelManager", lifespan=lifespan)
     app.include_router(router)
+    install_access_log_middleware(app)
     return app
 
 

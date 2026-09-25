@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import agent_deploy, gpu_stats
+from .. import access_log, agent_deploy, gpu_stats
 from ..adapters.factory import build_runner
 from ..schema_help import build_help
 from .manager import ConflictError, NotFoundError, RegistryValidationError, ReloadUnavailableError
@@ -17,6 +17,11 @@ def _manager(request: Request):
 @router.get("/v1/help")
 def help_doc():
     return build_help()
+
+
+@router.get("/v1/access-log")
+def get_access_log(lines: int = 200):
+    return {"log": access_log.tail(lines)}
 
 
 @router.get("/v1/config")

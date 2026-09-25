@@ -29,7 +29,13 @@ def _print_response(resp: httpx.Response) -> int:
 def cmd_serve(args) -> int:
     import uvicorn
 
-    uvicorn.run("modelmanager.coordinator.app:app", host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run(
+        "modelmanager.coordinator.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        access_log=False,  # replaced by our own middleware -> access.log (timestamps, duration)
+    )
     return 0
 
 
@@ -77,6 +83,15 @@ def cmd_logs(args) -> int:
 def cmd_stats(args) -> int:
     with _client(args) as client:
         return _print_response(client.get(f"/v1/systems/{args.system}/stats"))
+
+
+def cmd_access_log(args) -> int:
+    with _client(args) as client:
+        resp = client.get("/v1/access-log", params={"lines": args.lines})
+        if resp.status_code >= 400:
+            return _print_response(resp)
+        print(resp.json().get("log", ""))
+        return 0
 
 
 def cmd_systems(args) -> int:
@@ -168,6 +183,10 @@ def main() -> None:
     p_stats = sub.add_parser("stats", help="show GPU/VRAM stats for a system")
     p_stats.add_argument("system")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_access_log = sub.add_parser("access-log", help="show recent REST requests (method, path, status, duration)")
+    p_access_log.add_argument("--lines", type=int, default=200)
+    p_access_log.set_defaults(func=cmd_access_log)
 
     sub.add_parser("help", help="show the registry schema and API reference").set_defaults(func=cmd_help)
     sub.add_parser("config", help="show the full current registry").set_defaults(func=cmd_config)

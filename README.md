@@ -73,7 +73,13 @@ modelmanager put engines my-engine @path/to/body.json      # body can also come 
 modelmanager config                                        # full current registry as one document
 modelmanager reload                                        # re-read registry.json from disk, apply live
 modelmanager deploy-agent [system] [--force]               # sync scripts/windows/agent.ps1 to windows/ssh boxes
+modelmanager access-log --lines 100                         # recent REST requests: client, method, path, status, duration
 ```
+
+Incoming requests are logged separately from app logs, to
+`~/.local/state/modelmanager/access.log` (rotated at 5MB, 3 backups) -
+readable directly on sleek, via the CLI above, or `GET /v1/access-log` for a
+caller on another machine with no shell access to sleek.
 
 `GET /v1/help` is meant to be self-sufficient: any harness, agent, or script can hit it
 first to learn the systems/engines/gpu_groups/models schema (fields, types,

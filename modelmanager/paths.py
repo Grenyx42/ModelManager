@@ -18,3 +18,7 @@ def pid_file(definition_name: str) -> Path:
 
 def log_file(definition_name: str) -> Path:
     return state_dir() / "logs" / f"{definition_name}.log"
+
+
+def access_log_file() -> Path:
+    return state_dir() / "access.log"

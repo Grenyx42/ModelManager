@@ -115,6 +115,11 @@ def build_help() -> dict:
         },
         "endpoints": [
             {"method": "GET", "path": "/v1/help", "description": "this document"},
+            {
+                "method": "GET",
+                "path": "/v1/access-log",
+                "description": "recent incoming REST requests (client, method, path, status, duration), for any caller with no shell on this box. ?lines=200 to control how many.",
+            },
             {"method": "GET", "path": "/v1/config", "description": "full current registry (systems, engines, gpu_groups, models) as one document"},
             {
                 "method": "POST",
