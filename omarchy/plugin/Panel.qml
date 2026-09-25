@@ -33,6 +33,8 @@ Panel {
   property string lastError: ""
   property string detailLabel: ""
   property string detailText: ""
+  property var detailGpus: null
+  property bool detailExpanded: true
 
   readonly property int refreshIntervalSec: {
     var n = parseInt(String(setting("refreshIntervalSec", 15)), 10)
@@ -60,6 +62,8 @@ Panel {
     if (logsProc.running) return
     detailLabel = "logs: " + name
     detailText = "loading..."
+    detailGpus = null
+    detailExpanded = true
     logsProc.command = [root.mmBin, "logs", name, "--lines", "80"]
     logsProc.running = true
   }
@@ -68,8 +72,31 @@ Panel {
     if (statsProc.running) return
     detailLabel = "stats: " + system
     detailText = "loading..."
+    detailGpus = null
+    detailExpanded = true
     statsProc.command = [root.mmBin, "stats", system]
     statsProc.running = true
+  }
+
+  function parseStats(text) {
+    try {
+      var data = JSON.parse(text)
+      if (data.gpus) {
+        detailGpus = data.gpus
+        detailText = ""
+      } else {
+        detailGpus = null
+        detailText = data.error || text
+      }
+    } catch (e) {
+      detailGpus = null
+      detailText = text
+    }
+  }
+
+  function vramPct(gpu) {
+    if (!gpu.memory_total_mb) return 0
+    return Math.max(0, Math.min(1, gpu.memory_used_mb / gpu.memory_total_mb))
   }
 
   function parseModels(text) {
@@ -154,8 +181,12 @@ Panel {
   Process {
     id: statsProc
     command: []
-    stdout: StdioCollector { id: statsOut; waitForEnd: true; onStreamFinished: root.detailText = text }
-    stderr: StdioCollector { id: statsErr; waitForEnd: true; onStreamFinished: { if (text.trim() !== "") root.detailText = text } }
+    stdout: StdioCollector { id: statsOut; waitForEnd: true; onStreamFinished: root.parseStats(text) }
+    stderr: StdioCollector {
+      id: statsErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") { root.detailGpus = null; root.detailText = text } }
+    }
   }
 
   BarIconButton {
@@ -280,14 +311,85 @@ Panel {
           width: column.width
           spacing: Style.space(4)
 
-          PanelSectionHeader { text: root.detailLabel }
-          Text {
-            text: root.detailText
-            color: root.bar ? root.bar.foreground : Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.Wrap
+          Item {
             width: parent.width
+            implicitHeight: Math.max(detailHeader.implicitHeight, collapseBtn.implicitHeight)
+
+            PanelSectionHeader {
+              id: detailHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.detailLabel
+            }
+
+            Button {
+              id: collapseBtn
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.detailExpanded ? "▼" : "▲"
+              bordered: false
+              onClicked: root.detailExpanded = !root.detailExpanded
+            }
+          }
+
+          Column {
+            visible: root.detailExpanded
+            width: parent.width
+            spacing: Style.space(8)
+
+            Repeater {
+              visible: root.detailGpus !== null
+              model: root.detailGpus || []
+              delegate: Column {
+                width: parent.width
+                spacing: Style.space(2)
+
+                Text {
+                  text: (modelData.name || "GPU") + " (#" + modelData.index + ")"
+                  color: root.bar ? root.bar.foreground : Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                Rectangle {
+                  width: parent.width
+                  height: Style.space(6)
+                  radius: height / 2
+                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 2.2)
+
+                  Rectangle {
+                    width: parent.width * root.vramPct(modelData)
+                    height: parent.height
+                    radius: height / 2
+                    color: Color.accent
+                  }
+                }
+
+                Text {
+                  text: "VRAM " + modelData.memory_used_mb + " / " + modelData.memory_total_mb + " MB ("
+                    + Math.round(root.vramPct(modelData) * 100) + "%)   Util " + modelData.utilization_pct
+                    + "%   " + modelData.temperature_c + "°C"
+                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+              }
+            }
+
+            Text {
+              visible: root.detailGpus === null
+              text: root.detailText
+              color: root.bar ? root.bar.foreground : Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+              width: parent.width
+            }
           }
         }
 
