@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 import httpx
 
@@ -71,6 +72,24 @@ def cmd_summary(args) -> int:
         return _print_response(client.get("/v1/status/summary"))
 
 
+def cmd_help(args) -> int:
+    with _client(args) as client:
+        return _print_response(client.get("/v1/help"))
+
+
+def cmd_put(args) -> int:
+    raw = args.json
+    if raw.startswith("@"):
+        raw = Path(raw[1:]).read_text()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"error": f"invalid JSON body: {exc}"}))
+        return 1
+    with _client(args) as client:
+        return _print_response(client.post(f"/v1/{args.resource}/{args.name}", json=data))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="modelmanager")
     parser.add_argument("--url", default=DEFAULT_URL, help="coordinator base URL")
@@ -102,6 +121,14 @@ def main() -> None:
     p_stats = sub.add_parser("stats", help="show GPU/VRAM stats for a system")
     p_stats.add_argument("system")
     p_stats.set_defaults(func=cmd_stats)
+
+    sub.add_parser("help", help="show the registry schema and API reference").set_defaults(func=cmd_help)
+
+    p_put = sub.add_parser("put", help="create or update a systems/engines/gpu_groups/models entry")
+    p_put.add_argument("resource", choices=["systems", "engines", "gpu_groups", "models"])
+    p_put.add_argument("name")
+    p_put.add_argument("json", help="JSON body, or @path/to/file.json")
+    p_put.set_defaults(func=cmd_put)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

@@ -55,7 +55,18 @@ modelmanager stop qwen-72b
 modelmanager logs qwen-72b --lines 100
 modelmanager systems              # configured systems
 modelmanager stats monolith       # GPU/VRAM via nvidia-smi (local or SSH)
+modelmanager help                 # full registry schema + API reference, for agents/scripts
+modelmanager put models qwen-72b '{"candidates": [...]}'   # create/update an entry (see `help`)
+modelmanager put engines my-engine @path/to/body.json      # body can also come from a file
 ```
+
+`GET /v1/help` is meant to be self-sufficient: any harness, agent, or script can hit it
+first to learn the systems/engines/gpu_groups/models schema (fields, types,
+required/optional, examples) and every endpoint, then `POST /v1/{resource}/{name}`
+to create or update an entry directly - no need to hand-edit `registry.json`.
+Writes validate the whole registry (including cross-references) before
+accepting anything and persist atomically; an invalid write changes nothing
+and returns a specific 422 error.
 
 ### Windows boxes
 

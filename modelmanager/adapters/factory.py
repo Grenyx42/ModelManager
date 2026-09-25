@@ -35,3 +35,9 @@ class AdapterRegistry:
         if engine_name not in self._cache:
             self._cache[engine_name] = build_adapter(engine_name, self.registry)
         return self._cache[engine_name]
+
+    def invalidate(self, engine_name: str) -> None:
+        self._cache.pop(engine_name, None)
+
+    def clear(self) -> None:
+        self._cache.clear()
