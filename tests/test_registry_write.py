@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from modelmanager.coordinator.manager import Manager, RegistryValidationError
+from modelmanager.coordinator.manager import Manager, RegistryValidationError, ReloadUnavailableError
 from modelmanager.coordinator.state import StateStore
-from tests.test_manager import build_registry
+from tests.test_manager import FakeAdapter, FakeAdapterRegistry, build_registry
 
 
 def make_manager_with_path(tmp_path):
@@ -74,3 +74,61 @@ def test_second_write_preserves_first(tmp_path):
 
     on_disk = json.loads(path.read_text())
     assert set(on_disk["gpu_groups"]) == {"gpu0", "gpu1", "gpu2"}
+
+
+def test_reload_without_path_raises():
+    registry = build_registry()
+    manager = Manager(registry, StateStore())
+    with pytest.raises(ReloadUnavailableError):
+        manager.reload_from_disk()
+
+
+def test_reload_picks_up_hand_edited_addition(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})  # also writes the file
+
+    data = json.loads(path.read_text())
+    data["models"]["model-c"] = {
+        "candidates": [{"engine": "eng", "gpu_group": "gpu1", "port": 9, "model_path": "/m/c.gguf"}]
+    }
+    path.write_text(json.dumps(data))
+
+    result = manager.reload_from_disk()
+
+    assert "model-c" in manager.registry.models
+    assert "model-c" in result["models"]
+
+
+def test_reload_stops_active_model_that_was_deleted(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    fake_adapter = FakeAdapter()
+    manager.adapters = FakeAdapterRegistry(fake_adapter)
+    manager.ensure("model-b")
+
+    data = json.loads(path.read_text()) if path.exists() else manager.registry.model_dump(mode="json")
+    del data["models"]["model-b"]
+    path.write_text(json.dumps(data))
+
+    result = manager.reload_from_disk()
+
+    assert "model-b" not in manager.registry.models
+    assert result["stopped"] == ["model-b"]
+    assert fake_adapter.stop_calls == ["model-b"]
+
+
+def test_reload_rejects_invalid_file_and_keeps_old_registry(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})
+    path.write_text("{not valid json")
+
+    with pytest.raises(RegistryValidationError):
+        manager.reload_from_disk()
+
+    assert "gpu1" in manager.registry.gpu_groups
+
+
+def test_reload_missing_file_raises(tmp_path):
+    registry = build_registry()
+    manager = Manager(registry, StateStore(), registry_path=tmp_path / "does-not-exist.json")
+    with pytest.raises(RegistryValidationError):
+        manager.reload_from_disk()

@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from .. import gpu_stats
 from ..adapters.factory import build_runner
 from ..schema_help import build_help
-from .manager import ConflictError, NotFoundError, RegistryValidationError
+from .manager import ConflictError, NotFoundError, RegistryValidationError, ReloadUnavailableError
 
 router = APIRouter()
 
@@ -17,6 +17,22 @@ def _manager(request: Request):
 @router.get("/v1/help")
 def help_doc():
     return build_help()
+
+
+@router.get("/v1/config")
+def get_config(request: Request):
+    return _manager(request).registry.model_dump()
+
+
+@router.post("/v1/config/reload")
+def reload_config(request: Request):
+    manager = _manager(request)
+    try:
+        return manager.reload_from_disk()
+    except ReloadUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RegistryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/v1/models/{name}/ensure")

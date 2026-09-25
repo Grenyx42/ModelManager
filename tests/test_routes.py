@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -58,3 +60,35 @@ def test_get_unknown_model_returns_404(tmp_path):
     client = make_client(tmp_path)
     resp = client.get("/v1/models/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_config_and_reload_round_trip(tmp_path):
+    client = make_client(tmp_path)
+
+    full = client.get("/v1/config")
+    assert full.status_code == 200
+    assert "model-b" in full.json()["models"]
+
+    resp = client.post("/v1/models/model-c", json={"candidates": [{"engine": "eng", "gpu_group": "gpu0", "port": 3, "model_path": "/m/c.gguf"}]})
+    assert resp.status_code == 200
+
+    reg_path = tmp_path / "registry.json"
+    data = json.loads(reg_path.read_text())
+    del data["models"]["model-c"]
+    reg_path.write_text(json.dumps(data))
+
+    reload_resp = client.post("/v1/config/reload")
+    assert reload_resp.status_code == 200
+    assert "model-c" not in client.get("/v1/config").json()["models"]
+
+
+def test_reload_without_registry_path_returns_400():
+    app = FastAPI()
+    app.include_router(router)
+    app.state.manager = Manager(build_registry(), StateStore())
+    app.state.system_runners = {}
+    client = TestClient(app)
+
+    resp = client.post("/v1/config/reload")
+
+    assert resp.status_code == 400

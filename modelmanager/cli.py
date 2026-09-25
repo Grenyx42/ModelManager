@@ -77,6 +77,16 @@ def cmd_help(args) -> int:
         return _print_response(client.get("/v1/help"))
 
 
+def cmd_config(args) -> int:
+    with _client(args) as client:
+        return _print_response(client.get("/v1/config"))
+
+
+def cmd_reload(args) -> int:
+    with _client(args) as client:
+        return _print_response(client.post("/v1/config/reload"))
+
+
 def cmd_put(args) -> int:
     raw = args.json
     if raw.startswith("@"):
@@ -123,6 +133,10 @@ def main() -> None:
     p_stats.set_defaults(func=cmd_stats)
 
     sub.add_parser("help", help="show the registry schema and API reference").set_defaults(func=cmd_help)
+    sub.add_parser("config", help="show the full current registry").set_defaults(func=cmd_config)
+    sub.add_parser(
+        "reload", help="re-read registry.json from disk and apply it live (e.g. after hand-editing a delete)"
+    ).set_defaults(func=cmd_reload)
 
     p_put = sub.add_parser("put", help="create or update a systems/engines/gpu_groups/models entry")
     p_put.add_argument("resource", choices=["systems", "engines", "gpu_groups", "models"])

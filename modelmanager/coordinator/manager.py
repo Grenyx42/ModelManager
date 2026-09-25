@@ -24,6 +24,10 @@ class RegistryValidationError(Exception):
     """A proposed registry write failed validation; nothing was changed."""
 
 
+class ReloadUnavailableError(Exception):
+    """This Manager has no registry_path, so there is nothing to reload from."""
+
+
 @dataclass
 class EnsureResult:
     host: str
@@ -161,6 +165,57 @@ class Manager:
                 on_commit()
             self._persist(new_registry)
             return getattr(self.registry, section)[name]
+
+    def reload_from_disk(self) -> dict:
+        """Re-read registry.json (e.g. after a hand edit, including a delete)
+        and apply it to the live coordinator without a restart: stops any
+        currently-active model whose definition was removed, swaps in the new
+        systems/engines/gpu_groups/models, drops all cached adapters so
+        changed engine/system config takes effect immediately, then
+        auto-starts any newly-pinned model that isn't already running."""
+        if self.registry_path is None:
+            raise ReloadUnavailableError("no registry_path configured for this coordinator instance")
+
+        with self._write_lock:
+            if not self.registry_path.exists():
+                raise RegistryValidationError(f"registry file not found at {self.registry_path}")
+            try:
+                data = json.loads(self.registry_path.read_text())
+                new_registry = Registry.model_validate(data)
+            except (json.JSONDecodeError, ValidationError) as exc:
+                raise RegistryValidationError(str(exc)) from exc
+
+            stopped = []
+            for name in list(self.registry.models):
+                if name in new_registry.models:
+                    continue
+                if self.state.get(name).is_active:
+                    self.stop(name)
+                    stopped.append(name)
+
+            for section in ("systems", "engines", "gpu_groups", "models"):
+                target = getattr(self.registry, section)
+                target.clear()
+                target.update(getattr(new_registry, section))
+            self.adapters.clear()
+
+            started = []
+            for name, definition in self.registry.models.items():
+                if definition.pinned and not self.state.get(name).is_active:
+                    try:
+                        self.ensure(name)
+                        started.append(name)
+                    except Exception:
+                        pass
+
+        return {
+            "stopped": stopped,
+            "started_pinned": started,
+            "systems": list(self.registry.systems),
+            "engines": list(self.registry.engines),
+            "gpu_groups": list(self.registry.gpu_groups),
+            "models": list(self.registry.models),
+        }
 
     def _persist(self, new_registry: Registry) -> None:
         if self.registry_path is None:

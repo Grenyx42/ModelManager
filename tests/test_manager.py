@@ -34,6 +34,12 @@ class FakeAdapterRegistry:
     def get(self, engine_name):
         return self.adapter
 
+    def invalidate(self, engine_name):
+        pass
+
+    def clear(self):
+        pass
+
 
 def build_registry() -> Registry:
     return Registry(

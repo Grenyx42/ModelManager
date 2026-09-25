@@ -105,6 +105,18 @@ def build_help() -> dict:
         },
         "endpoints": [
             {"method": "GET", "path": "/v1/help", "description": "this document"},
+            {"method": "GET", "path": "/v1/config", "description": "full current registry (systems, engines, gpu_groups, models) as one document"},
+            {
+                "method": "POST",
+                "path": "/v1/config/reload",
+                "description": (
+                    "re-read registry.json from disk and apply it live, no restart needed. "
+                    "Use this after hand-editing the file (e.g. to delete an entry - there is no "
+                    "delete endpoint). Stops any active model whose definition was removed, "
+                    "drops cached adapters so changed engine/system config takes effect, and "
+                    "auto-starts any newly-pinned model. Returns what changed."
+                ),
+            },
             {"method": "GET", "path": "/v1/systems", "description": "list all systems"},
             {"method": "GET", "path": "/v1/systems/{name}", "description": "get one system"},
             {"method": "POST", "path": "/v1/systems/{name}", "description": "create or update a system. Body: the system schema above.", "body_schema": "system"},
@@ -125,6 +137,6 @@ def build_help() -> dict:
         ],
         "notes": [
             "All writes (POST) validate the full registry (including cross-references between systems/engines/gpu_groups/models) before accepting the change, and persist to registry.json on success. An invalid write returns 422 with a specific error and changes nothing.",
-            "There is currently no delete endpoint; remove an entry by editing registry.json directly and restarting.",
+            "There is no delete endpoint by design: remove an entry by editing registry.json directly, then POST /v1/config/reload to apply it live (no restart needed).",
         ],
     }
