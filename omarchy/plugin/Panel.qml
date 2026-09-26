@@ -287,11 +287,27 @@ Panel {
       anchors.fill: parent
       onCloseRequested: root.close()
 
+      // The card's own height is capped (see contentHeight above, capped at
+      // Style.space(560)); contentHolder in KeyboardPanel.qml doesn't clip its
+      // children, so without this, content taller than that cap paints straight
+      // past the card's background and onto the desktop behind it instead of
+      // being clipped/scrollable. Two model/detail sections each with their own
+      // internal (smaller) scroll cap can still sum past the outer cap, so this
+      // needs to wrap everything, not just replace those inner Flickables.
+      Flickable {
+        id: outerFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
       Column {
         id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
+        width: outerFlick.width
         spacing: Style.space(10)
 
         PanelSectionHeader { text: "Models" }
@@ -530,6 +546,7 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
+      }
       }
     }
   }
