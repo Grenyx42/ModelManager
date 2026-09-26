@@ -304,10 +304,10 @@ Panel {
           }
         }
 
-        PanelSeparator { visible: root.detailLabel !== "" }
+        PanelSeparator { visible: root.detailLabel !== "" && root.detailExpanded }
 
         Column {
-          visible: root.detailLabel !== ""
+          visible: root.detailLabel !== "" && root.detailExpanded
           width: column.width
           spacing: Style.space(4)
 
@@ -326,7 +326,6 @@ Panel {
               id: collapseBtn
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.detailExpanded
               text: "▲"
               bordered: false
               onClicked: root.detailExpanded = false
@@ -334,7 +333,6 @@ Panel {
           }
 
           Column {
-            visible: root.detailExpanded
             width: parent.width
             spacing: Style.space(8)
 
