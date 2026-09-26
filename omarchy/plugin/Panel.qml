@@ -79,6 +79,25 @@ Panel {
     logsProc.running = true
   }
 
+  // Pins the log view to its latest line, both on first open (detailFlick has
+  // ~no content yet, so "at bottom" is trivially true) and on every
+  // auto-refresh after - unless the user has scrolled up to read earlier
+  // lines, in which case a refresh shouldn't yank them back down. contentY
+  // must be read *before* detailText changes underneath it, since that's what
+  // resizes contentHeight. The actual scroll is deferred with Qt.callLater
+  // since detailFlick's contentHeight hasn't picked up the new text's wrapped
+  // height yet on this exact tick.
+  function applyLogsText(text) {
+    var wasAtBottom = detailFlick.contentHeight - detailFlick.height <= 0
+      || detailFlick.contentY >= detailFlick.contentHeight - detailFlick.height - 4
+    detailText = text
+    if (wasAtBottom) {
+      Qt.callLater(function() {
+        detailFlick.contentY = Math.max(0, detailFlick.contentHeight - detailFlick.height)
+      })
+    }
+  }
+
   function showStats(system) {
     var label = "stats: " + system
     if (root.detailExpanded && root.detailLabel === label) {
@@ -200,6 +219,19 @@ Panel {
     }
   }
 
+  // Same as the stats timer above, for the logs tab.
+  Timer {
+    interval: 2000
+    repeat: true
+    running: root.opened && root.detailExpanded && root.logsModelName !== ""
+    onTriggered: {
+      if (!logsProc.running) {
+        logsProc.command = [root.mmBin, "logs", root.logsModelName, "--lines", "80"]
+        logsProc.running = true
+      }
+    }
+  }
+
   Process {
     id: listProc
     command: [root.mmBin, "list"]
@@ -240,8 +272,8 @@ Panel {
   Process {
     id: logsProc
     command: []
-    stdout: StdioCollector { id: logsOut; waitForEnd: true; onStreamFinished: root.detailText = text }
-    stderr: StdioCollector { id: logsErr; waitForEnd: true; onStreamFinished: { if (text.trim() !== "") root.detailText = text } }
+    stdout: StdioCollector { id: logsOut; waitForEnd: true; onStreamFinished: root.applyLogsText(text) }
+    stderr: StdioCollector { id: logsErr; waitForEnd: true; onStreamFinished: { if (text.trim() !== "") root.applyLogsText(text) } }
   }
 
   Process {
