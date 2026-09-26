@@ -38,6 +38,7 @@ Panel {
   property var detailGpus: null
   property bool detailExpanded: true
   property string activeStatsSystem: ""
+  property string logsModelName: ""
 
   readonly property int refreshIntervalSec: {
     var n = parseInt(String(setting("refreshIntervalSec", 15)), 10)
@@ -73,6 +74,7 @@ Panel {
     detailGpus = null
     detailExpanded = true
     activeStatsSystem = ""
+    logsModelName = name
     logsProc.command = [root.mmBin, "logs", name, "--lines", "80"]
     logsProc.running = true
   }
@@ -90,8 +92,26 @@ Panel {
     detailGpus = null
     detailExpanded = true
     activeStatsSystem = system
+    logsModelName = ""
     statsProc.command = [root.mmBin, "stats", system]
     statsProc.running = true
+  }
+
+  // Opens a real terminal that keeps polling the coordinator's logs endpoint
+  // (via the same CLI the popup itself uses - no direct SSH/file access, same
+  // as everything else here) for when 80 lines wrapped in the popup isn't
+  // enough. xdg-terminal-exec picks whatever terminal the session has
+  // configured as default, so this doesn't hardcode alacritty/kitty/foot/etc.
+  function openLogTerminal(name) {
+    // xdg-terminal-exec's two-token "--title <value>" form silently mis-parses
+    // (swallows the value as if it were the command), even with no spaces in
+    // it - only the "--title=<value>" single-token form works reliably here.
+    terminalProc.command = [
+      "xdg-terminal-exec", "--title=ModelManager logs: " + name, "--",
+      "watch", "-n", "2", root.mmBin, "logs", name, "--lines", "100"
+    ]
+    terminalProc.running = false
+    terminalProc.running = true
   }
 
   function parseStats(text) {
@@ -233,6 +253,13 @@ Panel {
       waitForEnd: true
       onStreamFinished: { if (text.trim() !== "") { root.detailGpus = null; root.detailText = text } }
     }
+  }
+
+  // Fire-and-forget: the terminal window it opens runs independently of us,
+  // so there's nothing to collect here.
+  Process {
+    id: terminalProc
+    command: []
   }
 
   BarIconButton {
@@ -390,7 +417,7 @@ Panel {
 
           Item {
             width: parent.width
-            implicitHeight: Math.max(detailHeader.implicitHeight, collapseBtn.implicitHeight)
+            implicitHeight: Math.max(detailHeader.implicitHeight, terminalBtn.implicitHeight, collapseBtn.implicitHeight)
 
             PanelSectionHeader {
               id: detailHeader
@@ -407,64 +434,89 @@ Panel {
               bordered: false
               onClicked: root.detailExpanded = false
             }
+
+            Button {
+              id: terminalBtn
+              anchors.right: collapseBtn.left
+              anchors.rightMargin: Style.space(4)
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.logsModelName !== "" && root.detailLabel === ("logs: " + root.logsModelName)
+              text: "Terminal"
+              bordered: true
+              onClicked: root.openLogTerminal(root.logsModelName)
+            }
           }
 
-          Column {
+          Flickable {
+            id: detailFlick
             width: parent.width
-            spacing: Style.space(8)
+            height: Math.min(Style.space(220), detailColumn.implicitHeight)
+            contentWidth: width
+            contentHeight: detailColumn.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            interactive: contentHeight > height
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            Repeater {
-              visible: root.detailGpus !== null
-              model: root.detailGpus || []
-              delegate: Column {
-                width: parent.width
-                spacing: Style.space(2)
+            Column {
+              id: detailColumn
+              width: detailFlick.width
+              spacing: Style.space(8)
 
-                Text {
-                  text: (modelData.name || "GPU") + " (#" + modelData.index + ")"
-                  color: root.bar ? root.bar.foreground : Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                  elide: Text.ElideRight
+              Repeater {
+                visible: root.detailGpus !== null
+                model: root.detailGpus || []
+                delegate: Column {
                   width: parent.width
-                }
+                  spacing: Style.space(2)
 
-                Rectangle {
-                  width: parent.width
-                  height: Style.space(6)
-                  radius: height / 2
-                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 2.2)
+                  Text {
+                    text: (modelData.name || "GPU") + " (#" + modelData.index + ")"
+                    color: root.bar ? root.bar.foreground : Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    elide: Text.ElideRight
+                    width: parent.width
+                  }
 
                   Rectangle {
-                    width: parent.width * root.vramPct(modelData)
-                    height: parent.height
+                    width: parent.width
+                    height: Style.space(6)
                     radius: height / 2
-                    color: Color.accent
+                    color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 2.2)
+
+                    Rectangle {
+                      width: parent.width * root.vramPct(modelData)
+                      height: parent.height
+                      radius: height / 2
+                      color: Color.accent
+                    }
+                  }
+
+                  Text {
+                    text: "VRAM " + modelData.memory_used_mb + " / " + modelData.memory_total_mb + " MB ("
+                      + Math.round(root.vramPct(modelData) * 100) + "%)   Util " + modelData.utilization_pct
+                      + "%   " + modelData.temperature_c + "°C"
+                    color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                    width: parent.width
                   }
                 }
-
-                Text {
-                  text: "VRAM " + modelData.memory_used_mb + " / " + modelData.memory_total_mb + " MB ("
-                    + Math.round(root.vramPct(modelData) * 100) + "%)   Util " + modelData.utilization_pct
-                    + "%   " + modelData.temperature_c + "°C"
-                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                  width: parent.width
-                }
               }
-            }
 
-            Text {
-              visible: root.detailGpus === null
-              text: root.detailText
-              color: root.bar ? root.bar.foreground : Color.foreground
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.Wrap
-              width: parent.width
+              Text {
+                visible: root.detailGpus === null
+                text: root.detailText
+                color: root.bar ? root.bar.foreground : Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+                width: parent.width
+              }
             }
           }
         }
