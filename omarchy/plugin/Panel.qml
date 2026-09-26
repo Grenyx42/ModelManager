@@ -263,8 +263,9 @@ Panel {
                   width: parent.width
                 }
                 Text {
-                  visible: modelData.candidate !== null && modelData.candidate !== undefined
-                  text: modelData.candidate ? (modelData.candidate.engine + " @ " + modelData.candidate.host + ":" + modelData.candidate.port) : ""
+                  text: modelData.active
+                    ? ((modelData.gpu_groups || []).join(", ") + "  ·  " + modelData.candidate.engine + " @ " + modelData.candidate.host + ":" + modelData.candidate.port)
+                    : ("gpu: " + (modelData.gpu_groups || []).join(", "))
                   color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption

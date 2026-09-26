@@ -165,6 +165,10 @@ class Manager:
             "idle_seconds": model_state.idle_seconds(),
             "in_use": model_state.is_busy(),
             "lease_count": len(model_state.leases),
+            # Every gpu_group any candidate could land in, always populated (not
+            # just while active) so callers can see which models compete for the
+            # same slot before anything is actually running.
+            "gpu_groups": list(dict.fromkeys(c.gpu_group for c in definition.candidates)),
             "candidate": None,
         }
         if model_state.is_active:

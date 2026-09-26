@@ -133,6 +133,13 @@ def test_list_models_reports_status():
     assert statuses["model-b"]["active"] is False
 
 
+def test_status_reports_gpu_groups_even_when_inactive():
+    manager, _ = make_manager()
+    status = manager.status("model-b")
+    assert status["active"] is False
+    assert status["gpu_groups"] == ["gpu0"]
+
+
 def test_acquire_returns_lease_id_and_marks_in_use():
     manager, adapter = make_manager()
     result = manager.acquire("model-b")
