@@ -42,3 +42,8 @@ def windows_agent_dir(runner: SSHRunner) -> str:
 
 def windows_agent_script_path(runner: SSHRunner) -> str:
     return f"{windows_agent_dir(runner)}\\{AGENT_SCRIPT_NAME}"
+
+
+def windows_agent_log_path(runner: SSHRunner, name: str) -> str:
+    """Matches Get-LogPath in scripts/windows/agent.ps1."""
+    return f"{windows_agent_dir(runner)}\\logs\\{name}.log"

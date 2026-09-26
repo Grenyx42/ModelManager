@@ -194,6 +194,29 @@ class Manager:
         adapter = self.adapters.get(candidate.engine)
         return adapter.logs(name, candidate, lines)
 
+    def log_location(self, name: str) -> dict:
+        """Where a model's logs actually live, for a caller that wants to
+        tail them directly (e.g. `ssh <host> tail -f <path>`) instead of
+        polling GET .../logs. `path` is None when there's no discrete file to
+        point at (an externally-managed ollama service, logged via journalctl
+        only)."""
+        definition = self.registry.models.get(name)
+        if definition is None:
+            raise NotFoundError(f"unknown model {name!r}")
+        model_state = self.state.get(name)
+        idx = model_state.active_candidate_index if model_state.is_active else 0
+        candidate = definition.candidates[idx]
+        engine = self.registry.engines[candidate.engine]
+        system = self.registry.systems[engine.system]
+        adapter = self.adapters.get(candidate.engine)
+        return {
+            "system": engine.system,
+            "control": system.control,
+            "os": system.os,
+            "ssh_host": system.ssh_host,
+            "path": adapter.log_path(name, candidate),
+        }
+
     def _result(self, candidate, idx: int) -> EnsureResult:
         system = self.registry.systems[self.registry.engines[candidate.engine].system]
         return EnsureResult(host=system.resolved_host(), port=candidate.port, candidate_index=idx)

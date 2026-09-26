@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from .. import paths
+from .. import paths, remote_paths
 from ..config import Candidate, EngineConfig, SystemConfig
 from ..runners.local import LocalRunner
 from ..runners.ssh import SSHRunner
@@ -79,6 +79,12 @@ class LlamaCppAdapter(EngineAdapter):
             return self.runner.tail(paths.log_file(definition_name), lines)
         result = self._invoke("logs", {"name": definition_name, "lines": lines})
         return result.stdout if result.ok else result.stderr
+
+    def log_path(self, definition_name: str, candidate: Candidate) -> str | None:
+        if isinstance(self.runner, LocalRunner):
+            return str(paths.log_file(definition_name))
+        assert isinstance(self.runner, SSHRunner)
+        return remote_paths.windows_agent_log_path(self.runner, definition_name)
 
     def _invoke(self, action: str, payload: dict):
         assert isinstance(self.runner, SSHRunner)

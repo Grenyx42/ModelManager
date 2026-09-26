@@ -65,6 +65,7 @@ modelmanager acquire qwen-72b --ttl 300   # like ensure, but takes a lease: can'
 modelmanager release qwen-72b             # end a lease (or all leases if --lease-id omitted)
 modelmanager stop qwen-72b                # --force to stop even if a lease is held
 modelmanager logs qwen-72b --lines 100
+modelmanager log-path qwen-72b     # {system,control,os,ssh_host,path} - where its logs actually live, for tailing directly
 modelmanager systems              # configured systems
 modelmanager stats monolith       # GPU/VRAM via nvidia-smi (local or SSH)
 modelmanager help                 # full registry schema + API reference, for agents/scripts

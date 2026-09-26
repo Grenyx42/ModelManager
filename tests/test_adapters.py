@@ -165,6 +165,30 @@ def test_llamacpp_ssh_start_includes_engine_env():
     }
 
 
+def test_llamacpp_log_path_local(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    engine = EngineConfig(system="sleek", type="llama.cpp", binary=fake_binary(tmp_path))
+    system = SystemConfig(os="linux", control="local")
+    adapter = LlamaCppAdapter(engine, system, LocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=8081, model_path="/models/x.gguf")
+
+    path = adapter.log_path("qwen-72b", candidate)
+
+    assert path == str(tmp_path / "modelmanager" / "logs" / "qwen-72b.log")
+
+
+def test_llamacpp_log_path_ssh():
+    engine = EngineConfig(system="monolith", type="llama.cpp", binary=r"C:\engines\buildB\llama-server.exe")
+    system = SystemConfig(os="windows", control="ssh", ssh_host="monolith")
+    runner = FakeSSHRunner()
+    adapter = LlamaCppAdapter(engine, system, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=8081, model_path=r"D:\models\x.gguf")
+
+    path = adapter.log_path("ennoia-27b", candidate)
+
+    assert path == r"C:\Users\wade\.ModelManager\logs\ennoia-27b.log"
+
+
 class FakeLocalRunner(LocalRunner):
     def __init__(self):
         self.shell_calls = []
@@ -278,3 +302,35 @@ def test_ollama_self_managed_server_skips_launch_when_already_reachable(monkeypa
     adapter.start("nomic-embed-monolith", candidate)
 
     assert not any("-Action start" in c for c in runner.calls)
+
+
+def test_ollama_log_path_none_when_externally_managed():
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text")
+
+    assert adapter.log_path("nomic-embed", candidate) is None
+
+
+def test_ollama_log_path_local_when_self_managed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434", binary="/opt/ollama/ollama")
+    adapter = OllamaAdapter("ollama-sleek", engine, LocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text")
+
+    path = adapter.log_path("nomic-embed", candidate)
+
+    assert path == str(tmp_path / "modelmanager" / "logs" / "ollama-server-ollama-sleek.log")
+
+
+def test_ollama_log_path_ssh_when_self_managed():
+    engine = EngineConfig(
+        system="monolith", type="ollama", base_url="http://monolith:11434", binary=r"C:\dev\ollama\ollama.exe"
+    )
+    runner = FakeSSHRunner()
+    adapter = OllamaAdapter("ollama-monolith", engine, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text")
+
+    path = adapter.log_path("nomic-embed-monolith", candidate)
+
+    assert path == r"C:\Users\wade\.ModelManager\logs\ollama-server-ollama-monolith.log"

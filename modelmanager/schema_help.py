@@ -188,6 +188,18 @@ def build_help() -> dict:
                 "description": "stop this model if running. 409s if a lease is currently held; pass ?force=true to stop anyway.",
             },
             {"method": "GET", "path": "/v1/models/{name}/logs", "description": "recent logs for this model (?lines=200)"},
+            {
+                "method": "GET",
+                "path": "/v1/models/{name}/log-path",
+                "description": (
+                    "where this model's logs actually live: {system, control, os, ssh_host, path}. "
+                    "path is a native-style absolute path (Windows backslashes included) on that system, "
+                    "or null when there's no discrete file (an externally-managed ollama service, logged "
+                    "only via journalctl). For a caller that wants to tail directly instead of polling "
+                    "GET .../logs - e.g. `ssh {ssh_host} tail -f {path}` (linux) or "
+                    "`ssh {ssh_host} powershell -Command \"Get-Content -Path '{path}' -Wait\"` (windows)."
+                ),
+            },
             {"method": "GET", "path": "/v1/status/summary", "description": "compact running-model summary, for dashboards/bar widgets"},
         ],
         "notes": [

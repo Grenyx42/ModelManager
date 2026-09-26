@@ -4,7 +4,7 @@ import time
 
 import httpx
 
-from .. import paths
+from .. import paths, remote_paths
 from ..config import Candidate, EngineConfig
 from ..runners.base import Runner
 from ..runners.local import LocalRunner
@@ -128,3 +128,12 @@ class OllamaAdapter(EngineAdapter):
             if result.ok and output and output != "-- No entries --":
                 return result.stdout
         return "ollama logs unavailable via journalctl on this system; check the ollama service directly"
+
+    def log_path(self, definition_name: str, candidate: Candidate) -> str | None:
+        if not self.engine.binary:
+            return None  # externally-managed service; only journalctl has these logs, no discrete file
+        name = self._server_name()
+        if isinstance(self.runner, LocalRunner):
+            return str(paths.log_file(name))
+        assert isinstance(self.runner, SSHRunner)
+        return remote_paths.windows_agent_log_path(self.runner, name)

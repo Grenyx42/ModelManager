@@ -80,6 +80,11 @@ def cmd_logs(args) -> int:
         return 0
 
 
+def cmd_log_path(args) -> int:
+    with _client(args) as client:
+        return _print_response(client.get(f"/v1/models/{args.name}/log-path"))
+
+
 def cmd_stats(args) -> int:
     with _client(args) as client:
         return _print_response(client.get(f"/v1/systems/{args.system}/stats"))
@@ -179,6 +184,12 @@ def main() -> None:
     p_logs.add_argument("name")
     p_logs.add_argument("--lines", type=int, default=200)
     p_logs.set_defaults(func=cmd_logs)
+
+    p_log_path = sub.add_parser(
+        "log-path", help="where a model's logs actually live (system/control/os/ssh_host/path), for tailing directly"
+    )
+    p_log_path.add_argument("name")
+    p_log_path.set_defaults(func=cmd_log_path)
 
     p_stats = sub.add_parser("stats", help="show GPU/VRAM stats for a system")
     p_stats.add_argument("system")

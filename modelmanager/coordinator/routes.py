@@ -119,6 +119,15 @@ def model_logs(name: str, request: Request, lines: int = 200):
     return {"logs": text}
 
 
+@router.get("/v1/models/{name}/log-path")
+def model_log_path(name: str, request: Request):
+    manager = _manager(request)
+    try:
+        return manager.log_location(name)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/v1/systems")
 def list_systems(request: Request):
     registry = _manager(request).registry

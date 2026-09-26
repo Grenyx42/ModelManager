@@ -116,19 +116,52 @@ Panel {
     statsProc.running = true
   }
 
-  // Opens a real terminal that keeps polling the coordinator's logs endpoint
-  // (via the same CLI the popup itself uses - no direct SSH/file access, same
-  // as everything else here) for when 80 lines wrapped in the popup isn't
-  // enough. xdg-terminal-exec picks whatever terminal the session has
-  // configured as default, so this doesn't hardcode alacritty/kitty/foot/etc.
+  // Opens a real terminal live-tailing this model's actual log file, for when
+  // 80 wrapped lines in the popup isn't enough. Looks up where that file is
+  // and how to reach it (`log-path`) first, since that differs by engine/OS:
+  // a plain local path, or an SSH host to tail (or Get-Content -Wait, on a
+  // Windows box - it has no tail(1)) it on. This is the one place the plugin
+  // talks SSH directly instead of only the coordinator's REST API, since the
+  // whole point is a real streaming shell, which the REST layer can't give it.
+  property string pendingTerminalModel: ""
+
   function openLogTerminal(name) {
+    if (logPathProc.running) return
+    pendingTerminalModel = name
+    logPathProc.command = [root.mmBin, "log-path", name]
+    logPathProc.running = true
+  }
+
+  function launchTerminalForLogPath(rawText) {
+    var name = root.pendingTerminalModel
+    var followCmd = null
+    try {
+      var info = JSON.parse(rawText)
+      if (info.path) {
+        if (info.control === "ssh" && info.os === "windows") {
+          followCmd = [
+            "ssh", info.ssh_host, "powershell", "-NoProfile", "-Command",
+            "Get-Content -Path '" + info.path + "' -Wait -Tail 100"
+          ]
+        } else if (info.control === "ssh") {
+          followCmd = ["ssh", info.ssh_host, "tail", "-f", "-n", "100", info.path]
+        } else {
+          followCmd = ["tail", "-f", "-n", "100", info.path]
+        }
+      }
+    } catch (e) {
+      // fall through to the polling fallback below
+    }
+    if (!followCmd) {
+      // No discrete log file to tail (e.g. an externally-managed ollama
+      // service, only in journalctl) - fall back to polling the same
+      // CLI/REST path the popup itself uses.
+      followCmd = ["watch", "-n", "2", root.mmBin, "logs", name, "--lines", "100"]
+    }
     // xdg-terminal-exec's two-token "--title <value>" form silently mis-parses
     // (swallows the value as if it were the command), even with no spaces in
     // it - only the "--title=<value>" single-token form works reliably here.
-    terminalProc.command = [
-      "xdg-terminal-exec", "--title=ModelManager logs: " + name, "--",
-      "watch", "-n", "2", root.mmBin, "logs", name, "--lines", "100"
-    ]
+    terminalProc.command = ["xdg-terminal-exec", "--title=ModelManager logs: " + name, "--"].concat(followCmd)
     terminalProc.running = false
     terminalProc.running = true
   }
@@ -284,6 +317,17 @@ Panel {
       id: statsErr
       waitForEnd: true
       onStreamFinished: { if (text.trim() !== "") { root.detailGpus = null; root.detailText = text } }
+    }
+  }
+
+  Process {
+    id: logPathProc
+    command: []
+    stdout: StdioCollector { id: logPathOut; waitForEnd: true; onStreamFinished: root.launchTerminalForLogPath(text) }
+    stderr: StdioCollector {
+      id: logPathErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.launchTerminalForLogPath("") }
     }
   }
 

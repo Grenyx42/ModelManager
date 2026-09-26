@@ -101,6 +101,26 @@ def test_get_unknown_model_returns_404(tmp_path):
     assert resp.status_code == 404
 
 
+def test_log_path_endpoint_reports_native_path(tmp_path):
+    client = make_client(tmp_path)
+
+    resp = client.get("/v1/models/model-b/log-path")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["system"] == "sleek"
+    assert body["control"] == "local"
+    assert body["os"] == "linux"
+    assert body["ssh_host"] is None
+    assert body["path"].endswith("logs/model-b.log")
+
+
+def test_log_path_endpoint_unknown_model_returns_404(tmp_path):
+    client = make_client(tmp_path)
+    resp = client.get("/v1/models/does-not-exist/log-path")
+    assert resp.status_code == 404
+
+
 def test_config_and_reload_round_trip(tmp_path):
     client = make_client(tmp_path)
 

@@ -26,6 +26,9 @@ class FakeAdapter(EngineAdapter):
     def logs(self, definition_name, candidate, lines=200):
         return "fake logs"
 
+    def log_path(self, definition_name, candidate):
+        return f"/fake/logs/{definition_name}.log"
+
 
 class FakeAdapterRegistry:
     def __init__(self, adapter: FakeAdapter):
@@ -232,3 +235,23 @@ def test_acquire_lease_expires_and_allows_swap(monkeypatch):
 
     manager.ensure("nomic-embed")
     assert adapter.stop_calls == ["model-b"]
+
+
+def test_log_location_reports_system_and_path():
+    manager, adapter = make_manager()
+
+    location = manager.log_location("model-b")
+
+    assert location == {
+        "system": "sleek",
+        "control": "local",
+        "os": "linux",
+        "ssh_host": None,
+        "path": "/fake/logs/model-b.log",
+    }
+
+
+def test_log_location_unknown_model_raises():
+    manager, _ = make_manager()
+    with pytest.raises(NotFoundError):
+        manager.log_location("does-not-exist")
