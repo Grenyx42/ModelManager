@@ -20,7 +20,7 @@ def build_adapter(engine_name: str, registry: Registry) -> EngineAdapter:
     system = registry.systems[engine.system]
     runner = build_runner(system)
     if engine.type == "ollama":
-        return OllamaAdapter(engine, runner)
+        return OllamaAdapter(engine_name, engine, runner)
     return LlamaCppAdapter(engine, system, runner)
 
 

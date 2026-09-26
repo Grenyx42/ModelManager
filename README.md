@@ -147,9 +147,24 @@ model definitions map to which engine+system candidates, with `pinned` and
 `idle_timeout_seconds` controlling eviction. See the example file for the
 full shape.
 
-A local llama.cpp engine can set `"env": {...}` - extra environment
-variables merged in when starting that build. Mainly for `LD_LIBRARY_PATH`,
-when a build's CUDA/cuBLAS libraries live somewhere non-standard (e.g.
-bundled inside a Python venv via a pip `nvidia-*` package rather than
-installed system-wide) - the coordinator launches processes with its own
-environment, not whatever a dev shell happened to have set.
+An engine can set `"env": {...}` - extra environment variables merged in
+when the coordinator launches its process - and `"cwd": "..."` - the
+working directory to launch it from, if that matters for the build (e.g. it
+resolves a relative library path from there). For llama.cpp this always
+applies. Common `env` use: `LD_LIBRARY_PATH`, when a build's CUDA/cuBLAS
+libraries live somewhere non-standard (e.g. bundled inside a Python venv via
+a pip `nvidia-*` package rather than installed system-wide) - the
+coordinator launches processes with its own environment, not whatever a dev
+shell happened to have set.
+
+An `ollama` engine normally just talks to `base_url`, assuming a server is
+already running there (a system/Windows service, outside our control). Set
+`"binary"` (and usually `"cwd"`/`"env"`) on it too if that's not true - e.g.
+a custom Ollama build that isn't registered as a service anywhere - and the
+coordinator launches and manages `ollama serve` itself the first time a
+model on that engine is started, the same way it manages a raw llama.cpp
+process (PID/log file locally, or the Windows WMI-launcher agent over SSH).
+`base_url` still needs to be a host the coordinator can actually reach
+(e.g. `http://monolith:11434`, not `localhost`, when the server lives on a
+different box), and `OLLAMA_HOST` in `env` needs to match the port and bind
+address you want it listening on.

@@ -27,15 +27,13 @@ switch ($Action) {
     "start" {
         $name = $payload.name
         $binary = $payload.binary
-        $modelPath = $payload.model_path
-        $port = $payload.port
-        $extraArgs = @()
-        if ($payload.args) { $extraArgs = @($payload.args) }
+        $argList = @()
+        if ($payload.args) { $argList = @($payload.args) }
+        $cwd = $payload.cwd
 
         $logPath = Get-LogPath $name
         $errLogPath = Get-ErrLogPath $name
         $pidPath = Get-PidPath $name
-        $argList = @("--model", $modelPath, "--port", "$port") + $extraArgs
         if (Test-Path $pidPath) { Remove-Item $pidPath -ErrorAction SilentlyContinue }
 
         function Quote-Literal($value) { "'" + ($value -replace "'", "''") + "'" }
@@ -76,11 +74,13 @@ switch ($Action) {
         # quoting rules get unreliable once several quoted arguments and
         # redirection operators are combined into one command-line string.
         $argListLiteral = "@(" + (($argList | ForEach-Object { Quote-Literal $_ }) -join ", ") + ")"
+        $workingDirLiteral = ""
+        if ($cwd) { $workingDirLiteral = "-WorkingDirectory $(Quote-Literal $cwd) " }
         $launcherDir = Join-Path $root "launchers"
         New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
         $launcherPath = Join-Path $launcherDir "$name.ps1"
         $launcherScript = @"
-$envLines`$proc = Start-Process -FilePath $(Quote-Literal $binary) -ArgumentList $argListLiteral -RedirectStandardOutput $(Quote-Literal $logPath) -RedirectStandardError $(Quote-Literal $errLogPath) -WindowStyle Hidden -PassThru
+$envLines`$proc = Start-Process -FilePath $(Quote-Literal $binary) -ArgumentList $argListLiteral $workingDirLiteral-RedirectStandardOutput $(Quote-Literal $logPath) -RedirectStandardError $(Quote-Literal $errLogPath) -WindowStyle Hidden -PassThru
 Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
 "@
         Set-Content -Path $launcherPath -Value $launcherScript -Encoding UTF8

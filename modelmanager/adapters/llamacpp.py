@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import base64
 import json
 
-from .. import paths, remote_paths
+from .. import paths
 from ..config import Candidate, EngineConfig, SystemConfig
 from ..runners.local import LocalRunner
 from ..runners.ssh import SSHRunner
+from . import windows_agent
 from .base import AdapterStatus, EngineAdapter
-
-
-def _b64(payload: dict) -> str:
-    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
 class LlamaCppAdapter(EngineAdapter):
@@ -28,19 +24,23 @@ class LlamaCppAdapter(EngineAdapter):
         self.runner = runner
 
     def start(self, definition_name: str, candidate: Candidate) -> None:
+        args = ["--model", candidate.model_path, "--port", str(candidate.port), *candidate.args]
         if isinstance(self.runner, LocalRunner):
-            cmd = [self.engine.binary, "--model", candidate.model_path, "--port", str(candidate.port), *candidate.args]
+            cmd = [self.engine.binary, *args]
             self.runner.start_background(
-                cmd, paths.log_file(definition_name), paths.pid_file(definition_name), extra_env=self.engine.env or None
+                cmd,
+                paths.log_file(definition_name),
+                paths.pid_file(definition_name),
+                extra_env=self.engine.env or None,
+                cwd=self.engine.cwd or None,
             )
             return
         payload = {
             "name": definition_name,
             "binary": self.engine.binary,
-            "model_path": candidate.model_path,
-            "port": candidate.port,
-            "args": candidate.args,
+            "args": args,
             "env": self.engine.env,
+            "cwd": self.engine.cwd,
         }
         result = self._invoke("start", payload)
         if not result.ok:
@@ -82,9 +82,4 @@ class LlamaCppAdapter(EngineAdapter):
 
     def _invoke(self, action: str, payload: dict):
         assert isinstance(self.runner, SSHRunner)
-        script_path = remote_paths.windows_agent_script_path(self.runner)
-        cmd = (
-            f'powershell -NoProfile -ExecutionPolicy Bypass -File {script_path} '
-            f'-Action {action} -PayloadB64 {_b64(payload)}'
-        )
-        return self.runner.run_shell(cmd, timeout=60)
+        return windows_agent.invoke(self.runner, action, payload)

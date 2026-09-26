@@ -47,7 +47,7 @@ def test_llamacpp_local_start_passes_engine_env(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = []
 
-        def start_background(self, cmd, log_path, pid_path, extra_env=None):
+        def start_background(self, cmd, log_path, pid_path, extra_env=None, cwd=None):
             self.calls.append(extra_env)
             pid_path.write_text("1")
             return 1
@@ -75,7 +75,7 @@ def test_llamacpp_local_start_passes_none_env_when_engine_has_none(tmp_path, mon
         def __init__(self):
             self.calls = []
 
-        def start_background(self, cmd, log_path, pid_path, extra_env=None):
+        def start_background(self, cmd, log_path, pid_path, extra_env=None, cwd=None):
             self.calls.append(extra_env)
             pid_path.write_text("1")
             return 1
@@ -132,9 +132,9 @@ def test_llamacpp_ssh_lifecycle_invokes_agent_script():
     assert "C:\\Users\\wade\\.ModelManager\\agent.ps1" in start_call
     payload_b64 = start_call.split("-PayloadB64 ")[1]
     payload = json.loads(base64.b64decode(payload_b64))
-    assert payload["model_path"] == r"D:\models\x.gguf"
-    assert payload["port"] == 8081
+    assert payload["args"] == ["--model", r"D:\models\x.gguf", "--port", "8081"]
     assert payload["env"] == {}
+    assert payload["cwd"] is None
 
     # the home directory is resolved once over SSH and cached, not re-queried per call
     assert sum("$env:USERPROFILE" in c for c in runner.calls) == 1
@@ -176,7 +176,7 @@ class FakeLocalRunner(LocalRunner):
 
 def test_ollama_status_and_lifecycle(monkeypatch):
     engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
-    adapter = OllamaAdapter(engine, FakeLocalRunner())
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
     candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text", ollama_task="embed")
 
     posted = {}
@@ -207,7 +207,7 @@ def test_ollama_status_and_lifecycle(monkeypatch):
 
 def test_ollama_status_when_unreachable(monkeypatch):
     engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
-    adapter = OllamaAdapter(engine, FakeLocalRunner())
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
     candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text")
 
     def fake_get(url, timeout):
@@ -217,3 +217,64 @@ def test_ollama_status_when_unreachable(monkeypatch):
 
     status = adapter.status("nomic-embed", candidate)
     assert status.running is False
+
+
+def test_ollama_self_managed_server_launches_via_agent_when_unreachable(monkeypatch):
+    engine = EngineConfig(
+        system="monolith",
+        type="ollama",
+        base_url="http://localhost:11434",
+        binary=r"C:\dev\ollama\ollama.exe",
+        cwd=r"C:\dev\ollama",
+        env={"OLLAMA_HOST": "0.0.0.0:11434", "OLLAMA_MODELS": r"C:\dev\ollama\models"},
+    )
+    runner = FakeSSHRunner()
+    adapter = OllamaAdapter("ollama-monolith", engine, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text", ollama_task="embed")
+
+    calls = {"n": 0}
+
+    def fake_get(url, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+        return httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url))
+
+    posted = {}
+
+    def fake_post(url, json, timeout):
+        posted["json"] = json
+        return httpx.Response(200, json={"done": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    adapter.start("nomic-embed-monolith", candidate)
+
+    start_call = next(c for c in runner.calls if "-Action start" in c)
+    payload = json.loads(base64.b64decode(start_call.split("-PayloadB64 ")[1]))
+    assert payload["name"] == "ollama-server-ollama-monolith"
+    assert payload["binary"] == r"C:\dev\ollama\ollama.exe"
+    assert payload["args"] == ["serve"]
+    assert payload["cwd"] == r"C:\dev\ollama"
+    assert payload["env"] == {"OLLAMA_HOST": "0.0.0.0:11434", "OLLAMA_MODELS": r"C:\dev\ollama\models"}
+    assert posted["json"]["keep_alive"] == -1
+
+
+def test_ollama_self_managed_server_skips_launch_when_already_reachable(monkeypatch):
+    engine = EngineConfig(
+        system="monolith",
+        type="ollama",
+        base_url="http://localhost:11434",
+        binary=r"C:\dev\ollama\ollama.exe",
+    )
+    runner = FakeSSHRunner()
+    adapter = OllamaAdapter("ollama-monolith", engine, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="nomic-embed-text", ollama_task="embed")
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url)))
+    monkeypatch.setattr(httpx, "post", lambda url, json, timeout: httpx.Response(200, json={"done": True}, request=httpx.Request("POST", url)))
+
+    adapter.start("nomic-embed-monolith", candidate)
+
+    assert not any("-Action start" in c for c in runner.calls)

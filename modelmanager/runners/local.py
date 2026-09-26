@@ -28,7 +28,12 @@ class LocalRunner(Runner):
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
     def start_background(
-        self, cmd: list[str], log_path: Path, pid_path: Path, extra_env: dict[str, str] | None = None
+        self,
+        cmd: list[str],
+        log_path: Path,
+        pid_path: Path,
+        extra_env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> int:
         log_fh = open(log_path, "ab")
         env = {**os.environ, **extra_env} if extra_env else None
@@ -39,6 +44,7 @@ class LocalRunner(Runner):
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             env=env,
+            cwd=cwd,
         )
         pid_path.write_text(str(proc.pid))
         self._children[proc.pid] = proc

@@ -48,15 +48,31 @@ class EngineConfig(BaseModel):
     )
     binary: Optional[str] = Field(
         default=None,
-        description="Required when type='llama.cpp'. Absolute path to the llama-server binary for this specific build (you can have several engines pointing at different custom builds).",
+        description=(
+            "Required when type='llama.cpp': absolute path to the llama-server binary for this specific "
+            "build (you can have several engines pointing at different custom builds). Optional when "
+            "type='ollama': if set, the coordinator launches and manages 'ollama serve' itself using this "
+            "binary path, instead of assuming a server is already running externally at base_url - use this "
+            "for a custom Ollama build that isn't registered as a system/Windows service. Leave unset for a "
+            "normal Ollama install where base_url is already reachable on its own."
+        ),
+    )
+    cwd: Optional[str] = Field(
+        default=None,
+        description=(
+            "Working directory to launch the process from, if it matters for this build (e.g. a custom "
+            "Ollama build that resolves relative paths from its own install directory). Optional; omit if "
+            "the binary doesn't care about its working directory."
+        ),
     )
     env: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Extra environment variables merged into the process's environment when starting a local "
-            "llama.cpp candidate on this engine (ignored for ollama and for remote/ssh systems). Common "
-            "use: LD_LIBRARY_PATH, when the build's CUDA/cuBLAS libraries aren't on the system's default "
-            "library path (e.g. installed via a pip nvidia-* package inside some venv rather than system-wide)."
+            "Extra environment variables merged into the process's environment when this engine launches a "
+            "process itself: always for llama.cpp candidates, and for ollama only when binary is set (a "
+            "self-managed 'ollama serve'). Ignored for an ollama engine with no binary set (externally-managed "
+            "server). Common uses: LD_LIBRARY_PATH for a build whose CUDA/cuBLAS libraries aren't on the "
+            "system's default library path; OLLAMA_HOST/OLLAMA_MODELS/etc. for a custom Ollama build."
         ),
     )
 
