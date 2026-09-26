@@ -92,8 +92,17 @@ specific 422 error and changes nothing.
 There's no delete endpoint by design: hand-edit `registry.json` to remove an
 entry, then `modelmanager reload` to apply it without restarting the
 coordinator. Reload stops any currently-active model whose definition was
-removed, drops cached adapters so changed engine/system config takes effect,
-and auto-starts anything newly pinned.
+actually removed, drops cached adapters so changed engine/system config
+takes effect, and auto-starts anything newly pinned.
+
+Renaming an active model's key (instead of removing it) is safe too: reload
+detects a new, unfamiliar key with the exact same `candidates` as a
+disappeared one and treats it as a rename, carrying over the running
+state (active candidate, last-used clock, leases) instead of stopping the
+process and leaving the new name with no memory of it. This only kicks in
+for a model that was actually active at reload time and whose candidates
+match exactly - change the port/model/engine in the same edit and it's
+treated as a real remove+add instead.
 
 **Acquire/release vs ensure:** `ensure` just makes sure a model is loaded and
 refreshes its idle clock - a concurrent idle sweep or another model's request

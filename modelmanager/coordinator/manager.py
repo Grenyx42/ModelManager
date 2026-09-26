@@ -227,10 +227,18 @@ class Manager:
     def reload_from_disk(self) -> dict:
         """Re-read registry.json (e.g. after a hand edit, including a delete)
         and apply it to the live coordinator without a restart: stops any
-        currently-active model whose definition was removed, swaps in the new
-        systems/engines/gpu_groups/models, drops all cached adapters so
-        changed engine/system config takes effect immediately, then
-        auto-starts any newly-pinned model that isn't already running."""
+        currently-active model whose definition was actually removed, swaps
+        in the new systems/engines/gpu_groups/models, drops all cached
+        adapters so changed engine/system config takes effect immediately,
+        then auto-starts any newly-pinned model that isn't already running.
+
+        A model that's active and was renamed (not removed) is a special
+        case: its old key disappearing looks identical to a deletion, but
+        force-stopping it and leaving the new key with no memory of it would
+        kill a perfectly healthy process just because the JSON changed its
+        name. Detected by an exact candidates match against a new, unknown
+        name; when found, the running state (active candidate, last_used,
+        leases) is carried over to the new name instead of being stopped."""
         if self.registry_path is None:
             raise ReloadUnavailableError("no registry_path configured for this coordinator instance")
 
@@ -243,12 +251,25 @@ class Manager:
             except (json.JSONDecodeError, ValidationError) as exc:
                 raise RegistryValidationError(str(exc)) from exc
 
-            stopped = []
-            for name in list(self.registry.models):
-                if name in new_registry.models:
+            old_only = set(self.registry.models) - set(new_registry.models)
+            new_only = set(new_registry.models) - set(self.registry.models)
+
+            renamed: dict[str, str] = {}
+            for old_name in list(old_only):
+                if not self.state.get(old_name).is_active:
                     continue
-                if self.state.get(name).is_active:
-                    self.stop(name, force=True)  # its definition is gone; no lease can hold it open
+                old_candidates = self.registry.models[old_name].candidates
+                matches = [n for n in new_only if new_registry.models[n].candidates == old_candidates]
+                if len(matches) == 1:
+                    new_name = matches[0]
+                    renamed[old_name] = new_name
+                    old_only.discard(old_name)
+                    new_only.discard(new_name)
+
+            stopped = []
+            for name in self.registry.models:  # preserve deterministic order over the (unordered) old_only set
+                if name in old_only and self.state.get(name).is_active:
+                    self.stop(name, force=True)  # its definition is actually gone; no lease can hold it open
                     stopped.append(name)
 
             for section in ("systems", "engines", "gpu_groups", "models"):
@@ -256,6 +277,9 @@ class Manager:
                 target.clear()
                 target.update(getattr(new_registry, section))
             self.adapters.clear()
+
+            for old_name, new_name in renamed.items():
+                self.state.rename(old_name, new_name)
 
             started = []
             for name, definition in self.registry.models.items():
@@ -268,6 +292,7 @@ class Manager:
 
         return {
             "stopped": stopped,
+            "renamed": renamed,
             "started_pinned": started,
             "systems": list(self.registry.systems),
             "engines": list(self.registry.engines),

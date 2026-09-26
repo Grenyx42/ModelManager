@@ -125,6 +125,41 @@ def test_reload_stops_active_model_that_was_deleted(tmp_path):
     assert fake_adapter.stop_calls == ["model-b"]
 
 
+def test_reload_preserves_active_state_across_a_rename(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    fake_adapter = FakeAdapter()
+    manager.adapters = FakeAdapterRegistry(fake_adapter)
+    manager.ensure("model-b")
+
+    data = json.loads(path.read_text()) if path.exists() else manager.registry.model_dump(mode="json")
+    data["models"]["model-b-renamed"] = data["models"].pop("model-b")
+    path.write_text(json.dumps(data))
+
+    result = manager.reload_from_disk()
+
+    assert result["renamed"] == {"model-b": "model-b-renamed"}
+    assert result["stopped"] == []
+    assert fake_adapter.stop_calls == []  # the running process was never touched
+    assert "model-b" not in manager.registry.models
+    assert manager.status("model-b-renamed")["active"] is True
+
+
+def test_reload_does_not_rename_an_inactive_model(tmp_path):
+    # model-b was never ensure()'d, so it has no running state to preserve -
+    # renaming it should just look like a plain remove+add, not a "rename".
+    manager, path = make_manager_with_path(tmp_path)
+
+    data = json.loads(path.read_text()) if path.exists() else manager.registry.model_dump(mode="json")
+    data["models"]["model-b-renamed"] = data["models"].pop("model-b")
+    path.write_text(json.dumps(data))
+
+    result = manager.reload_from_disk()
+
+    assert result["renamed"] == {}
+    assert result["stopped"] == []
+    assert "model-b-renamed" in manager.registry.models
+
+
 def test_reload_rejects_invalid_file_and_keeps_old_registry(tmp_path):
     manager, path = make_manager_with_path(tmp_path)
     manager.upsert_gpu_group("gpu1", {"system": "sleek"})

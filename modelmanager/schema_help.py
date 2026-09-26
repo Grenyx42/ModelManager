@@ -127,9 +127,11 @@ def build_help() -> dict:
                 "description": (
                     "re-read registry.json from disk and apply it live, no restart needed. "
                     "Use this after hand-editing the file (e.g. to delete an entry - there is no "
-                    "delete endpoint). Stops any active model whose definition was removed, "
+                    "delete endpoint). Stops any active model whose definition was actually removed, "
                     "drops cached adapters so changed engine/system config takes effect, and "
-                    "auto-starts any newly-pinned model. Returns what changed."
+                    "auto-starts any newly-pinned model. A renamed (not removed) active model - same "
+                    "candidates, new key - keeps running under its new name instead of being stopped; "
+                    "see the 'renamed' field in the response. Returns what changed."
                 ),
             },
             {"method": "GET", "path": "/v1/systems", "description": "list all systems"},

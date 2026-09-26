@@ -84,6 +84,12 @@ class StateStore:
                     return name
         return None
 
+    def rename(self, old_name: str, new_name: str) -> None:
+        with self._lock:
+            state = self._models.pop(old_name, None)
+            if state is not None:
+                self._models[new_name] = state
+
     def all(self) -> dict[str, ModelState]:
         with self._lock:
             return dict(self._models)
