@@ -37,6 +37,7 @@ Panel {
   property string detailText: ""
   property var detailGpus: null
   property bool detailExpanded: true
+  property string activeStatsSystem: ""
 
   readonly property int refreshIntervalSec: {
     var n = parseInt(String(setting("refreshIntervalSec", 15)), 10)
@@ -71,6 +72,7 @@ Panel {
     detailText = "loading..."
     detailGpus = null
     detailExpanded = true
+    activeStatsSystem = ""
     logsProc.command = [root.mmBin, "logs", name, "--lines", "80"]
     logsProc.running = true
   }
@@ -79,6 +81,7 @@ Panel {
     var label = "stats: " + system
     if (root.detailExpanded && root.detailLabel === label) {
       root.detailExpanded = false
+      activeStatsSystem = ""
       return
     }
     if (statsProc.running) return
@@ -86,6 +89,7 @@ Panel {
     detailText = "loading..."
     detailGpus = null
     detailExpanded = true
+    activeStatsSystem = system
     statsProc.command = [root.mmBin, "stats", system]
     statsProc.running = true
   }
@@ -160,6 +164,20 @@ Panel {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  // Only while the popup is open AND the stats tab is the one showing -
+  // stops itself the moment either goes false, no manual bookkeeping needed.
+  Timer {
+    interval: 2000
+    repeat: true
+    running: root.opened && root.detailExpanded && root.activeStatsSystem !== ""
+    onTriggered: {
+      if (!statsProc.running) {
+        statsProc.command = [root.mmBin, "stats", root.activeStatsSystem]
+        statsProc.running = true
+      }
+    }
   }
 
   Process {
