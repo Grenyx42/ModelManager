@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -28,6 +29,7 @@ Panel {
   readonly property string mmBin: Quickshell.env("HOME") + "/dev/ModelManager/.venv/bin/modelmanager"
 
   property var models: []
+  property var groupedModels: []
   property var systemNames: []
   property int runningCount: 0
   property string lastError: ""
@@ -109,10 +111,26 @@ Panel {
     return Math.max(0, Math.min(1, gpu.memory_used_mb / gpu.memory_total_mb))
   }
 
+  function groupModels(list) {
+    var byGroup = {}
+    var order = []
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i]
+      var g = (m.gpu_groups && m.gpu_groups.length > 0) ? m.gpu_groups.join(" + ") : "(no gpu_group)"
+      if (!byGroup[g]) { byGroup[g] = []; order.push(g) }
+      byGroup[g].push(m)
+    }
+    order.sort()
+    var grouped = []
+    for (var j = 0; j < order.length; j++) grouped.push({ group: order[j], models: byGroup[order[j]] })
+    return grouped
+  }
+
   function parseModels(text) {
     try {
       var data = JSON.parse(text)
       models = data
+      groupedModels = groupModels(data)
       var count = 0
       for (var i = 0; i < data.length; i++) if (data[i].active) count += 1
       runningCount = count
@@ -233,60 +251,88 @@ Panel {
 
         PanelSectionHeader { text: "Models" }
 
-        Repeater {
-          model: root.models
-          delegate: Item {
-            width: column.width
-            implicitHeight: modelRow.implicitHeight
+        Flickable {
+          id: modelsFlick
+          width: column.width
+          height: Math.min(Style.space(240), contentHeight)
+          contentWidth: width
+          contentHeight: modelsColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          interactive: contentHeight > height
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            Row {
-              id: modelRow
-              width: parent.width
-              spacing: Style.space(8)
+          Column {
+            id: modelsColumn
+            width: modelsFlick.width
+            spacing: Style.space(10)
 
-              Rectangle {
-                width: Style.space(8)
-                height: Style.space(8)
-                radius: width / 2
-                anchors.verticalCenter: parent.verticalCenter
-                color: root.statusColor(modelData)
-              }
+            Repeater {
+              model: root.groupedModels
+              delegate: Column {
+                width: modelsColumn.width
+                spacing: Style.space(4)
 
-              Column {
-                width: parent.width - ensureBtn.implicitWidth - logsBtn.implicitWidth - Style.space(80)
-                Text {
-                  text: modelData.name + (modelData.pinned ? "  • pinned" : "")
-                  color: root.bar ? root.bar.foreground : Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
-                  width: parent.width
+                PanelSectionHeader { text: modelData.group }
+
+                Repeater {
+                  model: modelData.models
+                  delegate: Item {
+                    width: modelsColumn.width
+                    implicitHeight: modelRow.implicitHeight
+
+                    Row {
+                      id: modelRow
+                      width: parent.width
+                      spacing: Style.space(8)
+
+                      Rectangle {
+                        width: Style.space(8)
+                        height: Style.space(8)
+                        radius: width / 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: root.statusColor(modelData)
+                      }
+
+                      Column {
+                        width: parent.width - ensureBtn.implicitWidth - logsBtn.implicitWidth - Style.space(80)
+                        Text {
+                          text: modelData.name + (modelData.pinned ? "  • pinned" : "")
+                          color: root.bar ? root.bar.foreground : Color.foreground
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.body
+                          elide: Text.ElideRight
+                          width: parent.width
+                        }
+                        Text {
+                          visible: modelData.active
+                          text: modelData.active ? (modelData.candidate.engine + " @ " + modelData.candidate.host + ":" + modelData.candidate.port) : ""
+                          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
+                          width: parent.width
+                        }
+                      }
+
+                      Button {
+                        id: logsBtn
+                        text: "Logs"
+                        bordered: true
+                        selected: root.detailExpanded && root.detailLabel === ("logs: " + modelData.name)
+                        onClicked: root.showLogs(modelData.name)
+                      }
+
+                      Button {
+                        id: ensureBtn
+                        text: modelData.active ? "Stop" : "Ensure"
+                        bordered: true
+                        onClicked: modelData.active ? root.stopModel(modelData.name) : root.ensure(modelData.name)
+                      }
+                    }
+                  }
                 }
-                Text {
-                  text: modelData.active
-                    ? ((modelData.gpu_groups || []).join(", ") + "  ·  " + modelData.candidate.engine + " @ " + modelData.candidate.host + ":" + modelData.candidate.port)
-                    : ("gpu: " + (modelData.gpu_groups || []).join(", "))
-                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                  width: parent.width
-                }
-              }
-
-              Button {
-                id: logsBtn
-                text: "Logs"
-                bordered: true
-                selected: root.detailExpanded && root.detailLabel === ("logs: " + modelData.name)
-                onClicked: root.showLogs(modelData.name)
-              }
-
-              Button {
-                id: ensureBtn
-                text: modelData.active ? "Stop" : "Ensure"
-                bordered: true
-                onClicked: modelData.active ? root.stopModel(modelData.name) : root.ensure(modelData.name)
               }
             }
           }
