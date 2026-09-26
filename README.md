@@ -123,6 +123,18 @@ modelmanager deploy-agent monolith --force   # re-upload even if unchanged
 Just make sure `ssh <that-host>` already works non-interactively (key auth,
 no passphrase prompt) - `~/.ssh/config` aliases are reused as-is.
 
+**Why `agent.ps1` launches via WMI instead of `Start-Process`:** Windows'
+OpenSSH assigns every SSH session's processes to a Job Object, and kills the
+whole job the instant the session closes - which is right after `agent.ps1`
+returns. A plain `Start-Process` child stays in that job and gets killed
+along with it, so the model would appear to start successfully and then die
+within moments, often with zero log output if it happened mid-load. WMI
+process creation (`Invoke-CimMethod ... Win32_Process Create`) makes
+`WmiPrvSE.exe` the parent instead, entirely outside that job, so the process
+survives past the SSH session ending - the actual point of starting a
+background service. Confirmed directly: a `Start-Process`-launched PID was
+gone the moment a fresh SSH connection checked it; a WMI-launched one wasn't.
+
 ### Omarchy plugin
 
 See `omarchy/plugin/README.md`.

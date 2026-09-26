@@ -34,14 +34,75 @@ switch ($Action) {
 
         $logPath = Get-LogPath $name
         $errLogPath = Get-ErrLogPath $name
+        $pidPath = Get-PidPath $name
         $argList = @("--model", $modelPath, "--port", "$port") + $extraArgs
+        if (Test-Path $pidPath) { Remove-Item $pidPath -ErrorAction SilentlyContinue }
 
-        $proc = Start-Process -FilePath $binary -ArgumentList $argList `
-            -RedirectStandardOutput $logPath -RedirectStandardError $errLogPath `
-            -WindowStyle Hidden -PassThru
+        function Quote-Literal($value) { "'" + ($value -replace "'", "''") + "'" }
 
-        Set-Content -Path (Get-PidPath $name) -Value $proc.Id
-        @{ pid = $proc.Id; log_path = $logPath } | ConvertTo-Json -Compress
+        # Env vars go inside the generated launcher script below (applied to
+        # *its* process before it starts the model), not here - anything set
+        # in *this* process's environment would be useless, since the model
+        # runs in a separate process tree entirely (see the WMI comment).
+        $envLines = ""
+        if ($payload.env) {
+            $payload.env.PSObject.Properties | ForEach-Object {
+                $quotedValue = Quote-Literal $_.Value
+                if ($_.Name -ieq "PATH") {
+                    # Prepended, never replaces the rest of PATH outright - wiping
+                    # it can break the child's own DLL search for anything else.
+                    $envLines += "`$env:PATH = $quotedValue + ';' + `$env:PATH`r`n"
+                } else {
+                    $envLines += "Set-Item -Path 'Env:$($_.Name)' -Value $quotedValue`r`n"
+                }
+            }
+        }
+
+        # Start-Process here (or anything else spawned directly in this SSH
+        # session) stays inside the Job Object Windows' OpenSSH assigns to
+        # the session, and gets killed the instant the session closes -
+        # which happens right after this script returns, so the model would
+        # die moments after "successfully" starting. Instead, write a small
+        # launcher script that does the actual Start-Process call and hand
+        # *that* to WMI (Win32_Process.Create) to run: WMI's own process
+        # tree (WmiPrvSE as the parent) sits entirely outside the SSH
+        # session's job, so the launcher - and the Start-Process child it
+        # creates - both survive past the SSH session ending. The launcher
+        # writes its own PID to $pidPath directly once Start-Process returns,
+        # since it's the one that actually knows it; polling below just
+        # waits for that file to show up. Args/paths are embedded as
+        # PowerShell single-quoted literals (')''( doubling for escaping)
+        # rather than passed inline on WMI's CommandLine, since cmd.exe's own
+        # quoting rules get unreliable once several quoted arguments and
+        # redirection operators are combined into one command-line string.
+        $argListLiteral = "@(" + (($argList | ForEach-Object { Quote-Literal $_ }) -join ", ") + ")"
+        $launcherDir = Join-Path $root "launchers"
+        New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
+        $launcherPath = Join-Path $launcherDir "$name.ps1"
+        $launcherScript = @"
+$envLines`$proc = Start-Process -FilePath $(Quote-Literal $binary) -ArgumentList $argListLiteral -RedirectStandardOutput $(Quote-Literal $logPath) -RedirectStandardError $(Quote-Literal $errLogPath) -WindowStyle Hidden -PassThru
+Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
+"@
+        Set-Content -Path $launcherPath -Value $launcherScript -Encoding UTF8
+
+        $wmiCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`""
+        $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $wmiCommand }
+        if ($created.ReturnValue -ne 0) {
+            Write-Error "failed to launch $name via WMI (Win32_Process.Create ReturnValue=$($created.ReturnValue))"
+            exit 1
+        }
+
+        $modelPid = $null
+        for ($i = 0; $i -lt 100; $i++) {
+            if (Test-Path $pidPath) { $modelPid = Get-Content $pidPath; break }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $modelPid) {
+            Write-Error "$name did not report a PID within 10s of launching"
+            exit 1
+        }
+
+        @{ pid = [int]$modelPid; log_path = $logPath } | ConvertTo-Json -Compress
     }
     "stop" {
         $name = $payload.name

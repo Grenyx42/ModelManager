@@ -134,9 +134,35 @@ def test_llamacpp_ssh_lifecycle_invokes_agent_script():
     payload = json.loads(base64.b64decode(payload_b64))
     assert payload["model_path"] == r"D:\models\x.gguf"
     assert payload["port"] == 8081
+    assert payload["env"] == {}
 
     # the home directory is resolved once over SSH and cached, not re-queried per call
     assert sum("$env:USERPROFILE" in c for c in runner.calls) == 1
+
+
+def test_llamacpp_ssh_start_includes_engine_env():
+    engine = EngineConfig(
+        system="monolith",
+        type="llama.cpp",
+        binary=r"C:\Dev\Ollama\build\lib\ollama\llama-server.exe",
+        env={
+            "PATH": r"C:\Dev\Ollama\build\lib\ollama\cuda_v13",
+            "GGML_BACKEND_PATH": r"C:\Dev\Ollama\build\lib\ollama\cuda_v13\ggml-cuda.dll",
+        },
+    )
+    system = SystemConfig(os="windows", control="ssh", ssh_host="monolith")
+    runner = FakeSSHRunner()
+    adapter = LlamaCppAdapter(engine, system, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=8090, model_path=r"C:\models\x.gguf")
+
+    adapter.start("ennoia-27b", candidate)
+
+    start_call = next(c for c in runner.calls if "-Action start" in c)
+    payload = json.loads(base64.b64decode(start_call.split("-PayloadB64 ")[1]))
+    assert payload["env"] == {
+        "PATH": r"C:\Dev\Ollama\build\lib\ollama\cuda_v13",
+        "GGML_BACKEND_PATH": r"C:\Dev\Ollama\build\lib\ollama\cuda_v13\ggml-cuda.dll",
+    }
 
 
 class FakeLocalRunner(LocalRunner):

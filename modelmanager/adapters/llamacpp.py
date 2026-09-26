@@ -40,6 +40,7 @@ class LlamaCppAdapter(EngineAdapter):
             "model_path": candidate.model_path,
             "port": candidate.port,
             "args": candidate.args,
+            "env": self.engine.env,
         }
         result = self._invoke("start", payload)
         if not result.ok:
