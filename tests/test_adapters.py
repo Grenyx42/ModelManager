@@ -40,6 +40,57 @@ def test_llamacpp_local_lifecycle(tmp_path, monkeypatch):
     assert status.running is False
 
 
+def test_llamacpp_local_start_passes_engine_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    class RecordingLocalRunner(LocalRunner):
+        def __init__(self):
+            self.calls = []
+
+        def start_background(self, cmd, log_path, pid_path, extra_env=None):
+            self.calls.append(extra_env)
+            pid_path.write_text("1")
+            return 1
+
+    engine = EngineConfig(
+        system="sleek",
+        type="llama.cpp",
+        binary="/opt/llama-prism/llama-server",
+        env={"LD_LIBRARY_PATH": "/opt/cuda/lib"},
+    )
+    system = SystemConfig(os="linux", control="local")
+    runner = RecordingLocalRunner()
+    adapter = LlamaCppAdapter(engine, system, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=8081, model_path="/models/x.gguf")
+
+    adapter.start("bonsai-27b", candidate)
+
+    assert runner.calls == [{"LD_LIBRARY_PATH": "/opt/cuda/lib"}]
+
+
+def test_llamacpp_local_start_passes_none_env_when_engine_has_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    class RecordingLocalRunner(LocalRunner):
+        def __init__(self):
+            self.calls = []
+
+        def start_background(self, cmd, log_path, pid_path, extra_env=None):
+            self.calls.append(extra_env)
+            pid_path.write_text("1")
+            return 1
+
+    engine = EngineConfig(system="sleek", type="llama.cpp", binary="/opt/llama/llama-server")
+    system = SystemConfig(os="linux", control="local")
+    runner = RecordingLocalRunner()
+    adapter = LlamaCppAdapter(engine, system, runner)
+    candidate = Candidate(engine="e", gpu_group="g", port=8081, model_path="/models/x.gguf")
+
+    adapter.start("plain-model", candidate)
+
+    assert runner.calls == [None]
+
+
 class FakeSSHRunner(SSHRunner):
     def __init__(self):
         super().__init__("monolith")

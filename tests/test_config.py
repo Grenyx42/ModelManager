@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from modelmanager.config import load_registry
+from modelmanager.config import EngineConfig, load_registry
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "registry.example.json"
 
@@ -14,6 +14,16 @@ def test_loads_example_registry():
     assert registry.models["nomic-embed"].pinned is True
     assert registry.models["qwen-72b"].idle_timeout_seconds == 900
     assert len(registry.models["qwen-72b"].candidates) == 2
+
+
+def test_engine_env_defaults_empty_and_can_be_set():
+    default_engine = EngineConfig(system="sleek", type="llama.cpp", binary="/opt/llama-server")
+    assert default_engine.env == {}
+
+    engine_with_env = EngineConfig(
+        system="sleek", type="llama.cpp", binary="/opt/llama-server", env={"LD_LIBRARY_PATH": "/opt/cuda/lib"}
+    )
+    assert engine_with_env.env == {"LD_LIBRARY_PATH": "/opt/cuda/lib"}
 
 
 def test_rejects_unknown_engine_reference(tmp_path):

@@ -134,3 +134,10 @@ source of truth: which systems exist, which engines run on them, and which
 model definitions map to which engine+system candidates, with `pinned` and
 `idle_timeout_seconds` controlling eviction. See the example file for the
 full shape.
+
+A local llama.cpp engine can set `"env": {...}` - extra environment
+variables merged in when starting that build. Mainly for `LD_LIBRARY_PATH`,
+when a build's CUDA/cuBLAS libraries live somewhere non-standard (e.g.
+bundled inside a Python venv via a pip `nvidia-*` package rather than
+installed system-wide) - the coordinator launches processes with its own
+environment, not whatever a dev shell happened to have set.

@@ -50,6 +50,15 @@ class EngineConfig(BaseModel):
         default=None,
         description="Required when type='llama.cpp'. Absolute path to the llama-server binary for this specific build (you can have several engines pointing at different custom builds).",
     )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra environment variables merged into the process's environment when starting a local "
+            "llama.cpp candidate on this engine (ignored for ollama and for remote/ssh systems). Common "
+            "use: LD_LIBRARY_PATH, when the build's CUDA/cuBLAS libraries aren't on the system's default "
+            "library path (e.g. installed via a pip nvidia-* package inside some venv rather than system-wide)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _fields_for_type(self) -> "EngineConfig":

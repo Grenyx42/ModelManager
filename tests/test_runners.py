@@ -1,3 +1,4 @@
+import os
 import time
 
 from modelmanager.runners.local import LocalRunner
@@ -24,6 +25,28 @@ def test_start_background_tracks_pid_and_can_be_stopped(tmp_path):
     runner.stop(pid, timeout=2)
     time.sleep(0.1)
     assert not runner.is_running(pid)
+
+
+def test_start_background_merges_extra_env(tmp_path):
+    runner = LocalRunner()
+    log_path = tmp_path / "proc.log"
+    pid_path = tmp_path / "proc.pid"
+    log_path.touch()
+
+    pid = runner.start_background(
+        ["sh", "-c", "echo $MY_CUSTOM_VAR; echo $HOME"],
+        log_path,
+        pid_path,
+        extra_env={"MY_CUSTOM_VAR": "hello-cuda"},
+    )
+    for _ in range(20):
+        if not runner.is_running(pid):
+            break
+        time.sleep(0.1)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert lines[0] == "hello-cuda"
+    assert lines[1] == os.environ.get("HOME", "")  # base environment wasn't dropped, just extended
 
 
 def test_tail_returns_last_lines(tmp_path):

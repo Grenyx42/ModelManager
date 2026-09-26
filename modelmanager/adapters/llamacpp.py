@@ -30,7 +30,9 @@ class LlamaCppAdapter(EngineAdapter):
     def start(self, definition_name: str, candidate: Candidate) -> None:
         if isinstance(self.runner, LocalRunner):
             cmd = [self.engine.binary, "--model", candidate.model_path, "--port", str(candidate.port), *candidate.args]
-            self.runner.start_background(cmd, paths.log_file(definition_name), paths.pid_file(definition_name))
+            self.runner.start_background(
+                cmd, paths.log_file(definition_name), paths.pid_file(definition_name), extra_env=self.engine.env or None
+            )
             return
         payload = {
             "name": definition_name,

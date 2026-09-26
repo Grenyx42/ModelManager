@@ -27,14 +27,18 @@ class LocalRunner(Runner):
         proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
-    def start_background(self, cmd: list[str], log_path: Path, pid_path: Path) -> int:
+    def start_background(
+        self, cmd: list[str], log_path: Path, pid_path: Path, extra_env: dict[str, str] | None = None
+    ) -> int:
         log_fh = open(log_path, "ab")
+        env = {**os.environ, **extra_env} if extra_env else None
         proc = subprocess.Popen(
             cmd,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
         pid_path.write_text(str(proc.pid))
         self._children[proc.pid] = proc
