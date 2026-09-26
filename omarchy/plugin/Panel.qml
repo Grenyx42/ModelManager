@@ -59,8 +59,13 @@ Panel {
   }
 
   function showLogs(name) {
+    var label = "logs: " + name
+    if (root.detailExpanded && root.detailLabel === label) {
+      root.detailExpanded = false
+      return
+    }
     if (logsProc.running) return
-    detailLabel = "logs: " + name
+    detailLabel = label
     detailText = "loading..."
     detailGpus = null
     detailExpanded = true
@@ -69,8 +74,13 @@ Panel {
   }
 
   function showStats(system) {
+    var label = "stats: " + system
+    if (root.detailExpanded && root.detailLabel === label) {
+      root.detailExpanded = false
+      return
+    }
     if (statsProc.running) return
-    detailLabel = "stats: " + system
+    detailLabel = label
     detailText = "loading..."
     detailGpus = null
     detailExpanded = true
@@ -267,6 +277,7 @@ Panel {
                 id: logsBtn
                 text: "Logs"
                 bordered: true
+                selected: root.detailExpanded && root.detailLabel === ("logs: " + modelData.name)
                 onClicked: root.showLogs(modelData.name)
               }
 
@@ -299,6 +310,7 @@ Panel {
               id: statsBtn
               text: "Stats"
               bordered: true
+              selected: root.detailExpanded && root.detailLabel === ("stats: " + modelData)
               onClicked: root.showStats(modelData)
             }
           }
