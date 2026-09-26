@@ -326,9 +326,10 @@ Panel {
               id: collapseBtn
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              text: root.detailExpanded ? "▼" : "▲"
+              visible: root.detailExpanded
+              text: "▲"
               bordered: false
-              onClicked: root.detailExpanded = !root.detailExpanded
+              onClicked: root.detailExpanded = false
             }
           }
 
