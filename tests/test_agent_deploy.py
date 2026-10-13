@@ -1,5 +1,6 @@
 from modelmanager import agent_deploy
 from modelmanager.config import Registry, SystemConfig
+from modelmanager.errors import CommandFailedError
 from modelmanager.runners.base import CommandResult
 from modelmanager.runners.ssh import SSHRunner
 
@@ -92,9 +93,22 @@ def test_raises_when_upload_fails(monkeypatch):
 
     try:
         agent_deploy.deploy_if_needed("monolith", windows_ssh_system())
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
+        assert False, "expected CommandFailedError"
+    except CommandFailedError as exc:
         assert "monolith" in str(exc)
+
+
+def test_raises_when_mkdir_fails(monkeypatch):
+    runner = FakeSSHRunner(remote_hash="deadbeef")
+    runner.mkdir_ok = False
+    monkeypatch.setattr(agent_deploy, "SSHRunner", lambda host: runner)
+
+    try:
+        agent_deploy.deploy_if_needed("monolith", windows_ssh_system())
+        assert False, "expected CommandFailedError"
+    except CommandFailedError as exc:
+        assert "monolith" in str(exc)
+    assert runner.uploads == []  # never got that far
 
 
 def test_deploy_all_skips_local_and_reports_failures(monkeypatch):

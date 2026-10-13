@@ -9,6 +9,12 @@ from datetime import datetime, timezone
 @dataclass
 class ModelState:
     active_candidate_index: int | None = None
+    # The port actually in use for the active candidate - usually equal to
+    # that candidate's declared Candidate.port, but a llama.cpp/process
+    # candidate can be live-resolved to a different one if the declared port
+    # was already taken by another concurrently-active model (see
+    # port_check.resolve_port). None means "trust candidate.port".
+    active_port: int | None = None
     last_used: datetime | None = None
     # lease_id -> monotonic expiry time. A lease is a caller's claim that it is
     # actively using this model right now; while any lease is unexpired the
@@ -56,10 +62,11 @@ class StateStore:
         with self._lock:
             return self._models.setdefault(name, ModelState())
 
-    def set_active(self, name: str, candidate_index: int | None) -> None:
+    def set_active(self, name: str, candidate_index: int | None, port: int | None = None) -> None:
         with self._lock:
             state = self._models.setdefault(name, ModelState())
             state.active_candidate_index = candidate_index
+            state.active_port = port
             if candidate_index is not None:
                 state.last_used = datetime.now(timezone.utc)
             else:

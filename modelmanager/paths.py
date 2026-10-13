@@ -16,9 +16,17 @@ def pid_file(definition_name: str) -> Path:
     return state_dir() / "pids" / f"{definition_name}.pid"
 
 
+def port_file(definition_name: str) -> Path:
+    return state_dir() / "pids" / f"{definition_name}.port"
+
+
 def log_file(definition_name: str) -> Path:
     return state_dir() / "logs" / f"{definition_name}.log"
 
 
 def access_log_file() -> Path:
     return state_dir() / "access.log"
+
+
+def lifecycle_log_file() -> Path:
+    return state_dir() / "lifecycle.log"

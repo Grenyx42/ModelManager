@@ -4,10 +4,22 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/modelmanager serve --host 0.0.0.0 --port 8778
+# %h/.local/share/modelmanager/venv is created by scripts/setup.sh, not a
+# venv inside the repo - this unit works the same regardless of where the
+# repo itself was cloned. registry.json defaults to
+# %h/.config/modelmanager/registry.json for the same reason (see
+# modelmanager/config.py:default_registry_path) - override with
+# MODELMANAGER_REGISTRY here if you keep it somewhere else.
+#
+# The leading "-" makes a missing env file not an error - this file is
+# optional (scripts/setup.sh never creates it). Set MODELMANAGER_HOST/
+# MODELMANAGER_PORT/MODELMANAGER_REGISTRY/etc. in it to override `serve`'s
+# defaults (see cli.py) without editing this unit, then `systemctl --user
+# daemon-reload && systemctl --user restart modelmanager`.
+EnvironmentFile=-%h/.config/modelmanager/env
+ExecStart=%h/.local/share/modelmanager/venv/bin/modelmanager serve
 Restart=on-failure
 RestartSec=2
-Environment=MODELMANAGER_REGISTRY=%h/dev/ModelManager/registry.json
 
 [Install]
 WantedBy=default.target

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "slideout.modelmanager",
+  "name": "ModelManager",
+  "version": "0.1.0",
+  "author": "slideout",
+  "license": "MIT",
+  "description": "See and control every LLM model running across your GPU machines, right from the bar - start, stop, and swap models on Ollama or llama.cpp with one click.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "ModelManager",
+    "description": "Running-model count in the bar; click for the full list to start/stop models, view logs, and see per-system GPU stats.",
+    "category": "Developer Tools",
+    "aliases": ["llm", "ai", "ollama", "llama.cpp", "gpu"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15
+    },
+    "schema": [
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 5, "max": 300, "step": 5, "defaultValue": 15 }
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .errors import CommandFailedError
 from .runners.ssh import SSHRunner
 
 AGENT_DIR_NAME = ".ModelManager"
@@ -28,7 +29,7 @@ def windows_home_dir(runner: SSHRunner) -> str:
         result = runner.run_shell("powershell -NoProfile -Command '$env:USERPROFILE'", timeout=15)
         home = result.stdout.strip()
         if not result.ok or not home:
-            raise RuntimeError(
+            raise CommandFailedError(
                 f"could not resolve home directory on {runner.host_alias!r}: "
                 f"{result.stderr.strip() or result.stdout.strip()}"
             )
@@ -45,5 +46,13 @@ def windows_agent_script_path(runner: SSHRunner) -> str:
 
 
 def windows_agent_log_path(runner: SSHRunner, name: str) -> str:
-    """Matches Get-LogPath in scripts/windows/agent.ps1."""
+    """Matches Get-LogPath in scripts/windows/agent.ps1. This is stdout only -
+    llama-server (and most everything else we launch this way) logs almost
+    entirely to stderr, so a caller wanting the actual output nearly always
+    also wants windows_agent_err_log_path()."""
     return f"{windows_agent_dir(runner)}\\logs\\{name}.log"
+
+
+def windows_agent_err_log_path(runner: SSHRunner, name: str) -> str:
+    """Matches Get-ErrLogPath in scripts/windows/agent.ps1."""
+    return f"{windows_agent_dir(runner)}\\logs\\{name}.err.log"

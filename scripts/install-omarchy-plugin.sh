@@ -1,37 +1,49 @@
 #!/bin/bash
 # Installs (or re-syncs) the ModelManager Omarchy bar-widget plugin and makes
-# sure it's showing in the bar. Same install shape as any other Omarchy shell
-# plugin (e.g. stappmus.dell-power-profiles): a symlinked/copied folder under
-# ~/.config/omarchy/plugins/, discovered and hot-reloaded by omarchy-shell.
+# sure it's showing in the bar. Same discovery shape as any other Omarchy
+# shell plugin: a folder under ~/.config/omarchy/plugins/, scanned by
+# omarchy-shell.
+#
+# The plugin's manifest.json lives at this repo's root (required for
+# marketplace submission), so this repo doubles as the plugin "folder" - but
+# `omarchy plugin validate` rejects any symlink anywhere inside that folder,
+# and a dev checkout's .venv always contains some (lib64 -> lib, etc). So
+# instead of symlinking the live repo straight in (which also means every
+# dev-only file - .git, .venv, registry.json - would sit inside the plugin
+# folder too), this rsyncs just the plugin-relevant files across. Re-run
+# after editing Panel.qml to pick up the change (hot-reload-on-symlink
+# wasn't reliable here anyway - see the "Editing Panel.qml" note in the
+# README).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGIN_SRC="$REPO_DIR/omarchy/plugin"
-PLUGIN_ID="wade.modelmanager"
-PLUGIN_LINK="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+PLUGIN_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$REPO_DIR/manifest.json")"
+PLUGIN_DST="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 
-if [[ ! -d "$PLUGIN_SRC" ]]; then
-  echo "error: plugin source not found at $PLUGIN_SRC" >&2
-  exit 1
+# Omarchy never runs install hooks for a plugin (by design - see its docs),
+# so there's no other point in the install flow where a missing runtime venv
+# would get caught; Panel.qml just fails silently if modelmanager isn't there.
+if [[ ! -x "$HOME/.local/share/modelmanager/venv/bin/modelmanager" ]]; then
+  echo "warning: ~/.local/share/modelmanager/venv not found - the bar widget" >&2
+  echo "  will enable but won't show any models until you run:" >&2
+  echo "    $REPO_DIR/scripts/setup.sh" >&2
 fi
 
-if [[ -L "$PLUGIN_LINK" ]]; then
-  current_target="$(readlink -f "$PLUGIN_LINK")"
-  if [[ "$current_target" != "$(readlink -f "$PLUGIN_SRC")" ]]; then
-    echo "error: $PLUGIN_LINK is a symlink to something else ($current_target) - remove it by hand first" >&2
-    exit 1
-  fi
-elif [[ -e "$PLUGIN_LINK" ]]; then
-  echo "error: $PLUGIN_LINK already exists and isn't our symlink - remove/rename it by hand first" >&2
-  exit 1
-else
-  mkdir -p "$(dirname "$PLUGIN_LINK")"
-  ln -s "$PLUGIN_SRC" "$PLUGIN_LINK"
-  echo "Linked $PLUGIN_LINK -> $PLUGIN_SRC"
+if [[ -L "$PLUGIN_DST" ]]; then
+  echo "Removing old symlink-based install at $PLUGIN_DST..."
+  rm "$PLUGIN_DST"
 fi
+
+mkdir -p "$PLUGIN_DST"
+echo "Syncing plugin files to $PLUGIN_DST..."
+rsync -a --delete \
+  --exclude='.git' --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
+  --exclude='.pytest_cache' --exclude='*.egg-info' --exclude='external' \
+  --exclude='registry.json' \
+  "$REPO_DIR/" "$PLUGIN_DST/"
 
 echo "Validating plugin manifest..."
-omarchy plugin validate "$PLUGIN_SRC"
+omarchy plugin validate "$PLUGIN_DST"
 
 echo "Reloading omarchy-shell's plugin registry..."
 omarchy-shell shell rescanPlugins >/dev/null

@@ -1,6 +1,7 @@
 import pytest
 
 from modelmanager import remote_paths
+from modelmanager.errors import CommandFailedError
 from modelmanager.runners.base import CommandResult
 from modelmanager.runners.ssh import SSHRunner
 
@@ -39,13 +40,13 @@ def test_caches_after_first_resolution():
 
 def test_raises_when_resolution_fails():
     runner = FakeSSHRunner("coder", ok=False)
-    with pytest.raises(RuntimeError, match="coder"):
+    with pytest.raises(CommandFailedError, match="coder"):
         remote_paths.windows_home_dir(runner)
 
 
 def test_raises_when_output_is_empty():
     runner = FakeSSHRunner("coder", home="")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(CommandFailedError):
         remote_paths.windows_home_dir(runner)
 
 

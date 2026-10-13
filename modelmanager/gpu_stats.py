@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .errors import CommandFailedError
 from .runners.base import Runner
 
 QUERY_FIELDS = ["index", "name", "memory.used", "memory.total", "utilization.gpu", "temperature.gpu"]
@@ -11,7 +12,7 @@ NVIDIA_SMI_CMD = (
 def gpu_stats(runner: Runner, timeout: float = 15) -> list[dict]:
     result = runner.run_shell(NVIDIA_SMI_CMD, timeout=timeout)
     if not result.ok:
-        raise RuntimeError(f"nvidia-smi failed: {result.stderr.strip() or result.stdout.strip()}")
+        raise CommandFailedError(f"nvidia-smi failed: {result.stderr.strip() or result.stdout.strip()}")
     gpus = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]

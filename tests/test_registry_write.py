@@ -30,7 +30,7 @@ def test_upsert_model_adds_new_definition(tmp_path):
         "model-c",
         {
             "idle_timeout_seconds": 120,
-            "candidates": [{"engine": "eng", "gpu_group": "gpu0", "port": 3, "model_path": "/m/c.gguf"}],
+            "candidates": [{"engine": "eng", "gpu_group": "gpu0", "port": 4, "model_path": "/m/c.gguf"}],
         },
     )
 
@@ -38,6 +38,10 @@ def test_upsert_model_adds_new_definition(tmp_path):
     assert "model-c" in manager.registry.models
     on_disk = json.loads(path.read_text())
     assert "model-c" in on_disk["models"]
+
+    backup_path = tmp_path / "registry.json.last-good"
+    assert backup_path.exists()
+    assert "model-c" in json.loads(backup_path.read_text())["models"]
 
 
 def test_upsert_model_unknown_engine_rejected(tmp_path):
@@ -106,6 +110,9 @@ def test_reload_picks_up_hand_edited_addition(tmp_path):
 
     assert "model-c" in manager.registry.models
     assert "model-c" in result["models"]
+
+    backup_path = tmp_path / "registry.json.last-good"
+    assert "model-c" in json.loads(backup_path.read_text())["models"]
 
 
 def test_reload_stops_active_model_that_was_deleted(tmp_path):
@@ -176,3 +183,79 @@ def test_reload_missing_file_raises(tmp_path):
     manager = Manager(registry, StateStore(), registry_path=tmp_path / "does-not-exist.json")
     with pytest.raises(RegistryValidationError):
         manager.reload_from_disk()
+
+
+def test_registry_changed_on_disk_false_until_hand_edited(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})  # writes the file, records its own stat
+    assert manager.registry_changed_on_disk() is False
+
+    data = json.loads(path.read_text())
+    data["gpu_groups"]["gpu2"] = {"system": "sleek"}
+    path.write_text(json.dumps(data))
+
+    assert manager.registry_changed_on_disk() is True
+
+
+def test_registry_changed_on_disk_false_after_own_write_or_reload(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})
+    assert manager.registry_changed_on_disk() is False
+
+    data = json.loads(path.read_text())
+    data["gpu_groups"]["gpu2"] = {"system": "sleek"}
+    path.write_text(json.dumps(data))
+    assert manager.registry_changed_on_disk() is True
+
+    manager.reload_from_disk()
+
+    assert manager.registry_changed_on_disk() is False
+    assert "gpu2" in manager.registry.gpu_groups
+
+
+def test_reload_count_increments_on_each_successful_reload(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})
+    status = manager.reload_status()
+    assert status == {"reload_count": 0, "last_reload_at": None, "last_reload_error": None}
+
+    manager.reload_from_disk()
+    status = manager.reload_status()
+    assert status["reload_count"] == 1
+    assert status["last_reload_at"] is not None
+
+    manager.reload_from_disk()
+    assert manager.reload_status()["reload_count"] == 2
+
+
+def test_reload_count_unchanged_on_failed_reload(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})
+    path.write_text("{not valid json")
+
+    with pytest.raises(RegistryValidationError):
+        manager.reload_from_disk()
+
+    assert manager.reload_status()["reload_count"] == 0
+
+
+def test_reload_error_set_on_failure_and_cleared_on_success(tmp_path):
+    manager, path = make_manager_with_path(tmp_path)
+    manager.upsert_gpu_group("gpu1", {"system": "sleek"})
+    assert manager.reload_status()["last_reload_error"] is None
+
+    path.write_text("{not valid json")
+    with pytest.raises(RegistryValidationError):
+        manager.reload_from_disk()
+    status = manager.reload_status()
+    assert status["last_reload_error"] is not None
+    assert "not valid json" not in status["last_reload_error"]  # just the parser's message
+
+    # Fix the file and reload again - the error should clear.
+    fixed = manager.registry.model_dump(mode="json")
+    fixed["gpu_groups"]["gpu2"] = {"system": "sleek"}
+    path.write_text(json.dumps(fixed))
+
+    manager.reload_from_disk()
+
+    assert manager.reload_status()["last_reload_error"] is None

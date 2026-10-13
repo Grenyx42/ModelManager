@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import remote_paths
 from .config import Registry, SystemConfig
+from .errors import CommandFailedError
 from .runners.ssh import SSHRunner
 
 logger = logging.getLogger("modelmanager.agent_deploy")
@@ -58,11 +59,11 @@ def deploy_if_needed(system_name: str, system: SystemConfig, force: bool = False
         timeout=15,
     )
     if not mkdir_result.ok:
-        raise RuntimeError(f"failed to prepare {agent_dir!r} on {system_name!r}: {mkdir_result.stderr.strip()}")
+        raise CommandFailedError(f"failed to prepare {agent_dir!r} on {system_name!r}: {mkdir_result.stderr.strip()}")
 
     upload_result = runner.upload_file(LOCAL_AGENT_SCRIPT_PATH, script_path.replace("\\", "/"))
     if not upload_result.ok:
-        raise RuntimeError(f"failed to upload agent.ps1 to {system_name!r}: {upload_result.stderr.strip()}")
+        raise CommandFailedError(f"failed to upload agent.ps1 to {system_name!r}: {upload_result.stderr.strip()}")
 
     return {"system": system_name, "action": "deployed", "hash": local_hash, "path": script_path}
 

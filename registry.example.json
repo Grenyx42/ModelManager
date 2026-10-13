@@ -1,60 +1,533 @@
 {
   "systems": {
-    "sleek": { "os": "linux", "control": "local", "advertise_host": "sleek" },
-    "monolith": { "os": "windows", "control": "ssh", "ssh_host": "monolith" },
-    "coder": { "os": "windows", "control": "ssh", "ssh_host": "coder" }
+    "systemA": {
+      "os": "linux",
+      "control": "local",
+      "ssh_host": null,
+      "advertise_host": "systemA"
+    },
+    "systemB": {
+      "os": "windows",
+      "control": "ssh",
+      "ssh_host": "systemB",
+      "advertise_host": null
+    },
+    "systemC": {
+      "os": "windows",
+      "control": "ssh",
+      "ssh_host": "systemC",
+      "advertise_host": null
+    }
   },
   "gpu_groups": {
-    "sleek-gpu0": { "system": "sleek" },
-    "monolith-gpu0": { "system": "monolith" }
+    "systemA-gpu0-alwaysOn": {
+      "system": "systemA"
+    },
+    "systemA-gpu0-swappables": {
+      "system": "systemA"
+    },
+    "systemB-gpu0-swappables": {
+      "system": "systemB"
+    },
+    "systemB-gpu0-alwaysOn": {
+      "system": "systemB"
+    },
+    "systemA-gpu0-swappables2": {
+      "system": "systemA"
+    },
+    "systemC-gpu0": {
+      "system": "systemC"
+    }
   },
   "engines": {
-    "ollama-sleek": {
-      "system": "sleek",
+    "ollama-systemA": {
+      "system": "systemA",
       "type": "ollama",
-      "base_url": "http://localhost:11434"
+      "base_url": "http://localhost:11434",
+      "binary": null,
+      "cwd": null,
+      "env": {}
     },
-    "llamacpp-buildA": {
-      "system": "sleek",
+    "llama-prism": {
+      "system": "systemA",
       "type": "llama.cpp",
-      "binary": "/opt/llamacpp-buildA/llama-server"
+      "base_url": null,
+      "binary": "/home/lalamo/Work/ModelTesting/bin/llama-prism-b10735-842b188/llama-server",
+      "cwd": null,
+      "env": {
+        "LD_LIBRARY_PATH": ".:/home/lalamo/Work/ModelTesting/venv/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/home/lalamo/Work/ModelTesting/venv/lib/python3.12/site-packages/nvidia/cublas/lib"
+      }
     },
-    "llamacpp-monolith-b": {
-      "system": "monolith",
+    "systemB-llama-cuda13": {
+      "system": "systemB",
       "type": "llama.cpp",
-      "binary": "C:\\engines\\buildB\\llama-server.exe"
+      "base_url": null,
+      "binary": "C:\\Dev\\Ollama\\build\\lib\\ollama\\llama-server.exe",
+      "cwd": null,
+      "env": {
+        "PATH": "C:\\Dev\\Ollama\\build\\lib\\ollama\\cuda_v13",
+        "GGML_BACKEND_PATH": "C:\\Dev\\Ollama\\build\\lib\\ollama\\cuda_v13\\ggml-cuda.dll"
+      }
+    },
+    "systemB-llama-bonsai-cuda13": {
+      "system": "systemB",
+      "type": "llama.cpp",
+      "base_url": null,
+      "binary": "C:\\Dev\\MTPTest\\bonsai\\llama\\llama-server.exe",
+      "cwd": null,
+      "env": {
+        "PATH": "C:\\Dev\\MTPTest\\bonsai\\llama",
+        "GGML_BACKEND_PATH": "C:\\Dev\\MTPTest\\bonsai\\llama"
+      }
+    },
+    "ollama-systemB": {
+      "system": "systemB",
+      "type": "ollama",
+      "base_url": "http://systemB:11434",
+      "binary": "C:\\dev\\ollama\\ollama.exe",
+      "cwd": "C:\\dev\\ollama",
+      "env": {
+        "OLLAMA_HOST": "0.0.0.0:11434",
+        "OLLAMA_LIBRARY_PATH": "lib/Ollama",
+        "OLLAMA_MODELS": "c:\\dev\\ollama\\models"
+      }
+    },
+    "python-systemC": {
+      "system": "systemC",
+      "type": "process",
+      "base_url": null,
+      "binary": "c:\\users\\lalamo\\.pyenv\\pyenv-win\\versions\\3.10.11\\python.exe",
+      "cwd": null,
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "ollama-systemC": {
+      "system": "systemC",
+      "type": "ollama",
+      "base_url": "http://systemC:11434",
+      "binary": "c:\\dev\\Ollama\\ollama.exe",
+      "cwd": "c:\\dev\\Ollama",
+      "env": {
+        "OLLAMA_HOST": "0.0.0.0:11434"
+      }
+    },
+    "swarmui-systemC": {
+      "system": "systemC",
+      "type": "process",
+      "base_url": null,
+      "binary": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "cwd": "c:\\dev\\SwarmUI\\SwarmUI",
+      "env": {}
+    },
+    "qwen-turbo-systemC": {
+      "system": "systemC",
+      "type": "process",
+      "base_url": null,
+      "binary": "c:\\dev\\experimental\\qwen-image-turbo\\.venv\\Scripts\\python.exe",
+      "cwd": "c:\\dev\\experimental\\qwen-image-turbo",
+      "env": {
+        "QWEN_PORT": "8099",
+        "QWEN_VAE_DEVICE": "cuda:1"
+      }
     }
   },
   "models": {
     "nomic-embed": {
-      "pinned": true,
+      "pinned": false,
+      "idle_timeout_seconds": null,
       "candidates": [
         {
-          "engine": "ollama-sleek",
-          "model_ref": "nomic-embed-text",
+          "engine": "ollama-systemA",
+          "gpu_group": "systemA-gpu0-alwaysOn",
           "port": 11434,
-          "gpu_group": "sleek-gpu0",
-          "ollama_task": "embed"
+          "model_ref": "nomic-embed-text:latest",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "embed",
+          "health_check": null
         }
-      ]
+      ],
+      "depends_on": []
     },
-    "qwen-72b": {
+    "decision-4b": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "ollama-systemA",
+          "gpu_group": "systemA-gpu0-swappables",
+          "port": 11434,
+          "model_ref": "decision-4b:latest",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "qwen-7b": {
+      "pinned": false,
+      "idle_timeout_seconds": 60,
+      "candidates": [
+        {
+          "engine": "ollama-systemA",
+          "gpu_group": "systemA-gpu0-swappables",
+          "port": 11434,
+          "model_ref": "qwen2.5:7b-instruct",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "bonsai-27b": {
+      "pinned": false,
+      "idle_timeout_seconds": 21600,
+      "candidates": [
+        {
+          "engine": "llama-prism",
+          "gpu_group": "systemA-gpu0-swappables",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "/home/lalamo/Work/ModelTesting/models/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+          "args": [
+            "--ctx-size",
+            "40384",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--n-gpu-layers",
+            "99",
+            "--parallel",
+            "1",
+            "--host",
+            "0.0.0.0",
+            "--jinja",
+            "--alias",
+            "Ternary-Bonsai-2-27B-PTQ1_0"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "ennoia-bonsai-27b": {
+      "pinned": false,
+      "idle_timeout_seconds": 21600,
+      "candidates": [
+        {
+          "engine": "systemB-llama-bonsai-cuda13",
+          "gpu_group": "systemB-gpu0-swappables",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "C:\\Dev\\mtptest\\bonsai\\models\\Ternary-Bonsai-2-27B-PQ2_0.gguf",
+          "args": [
+            "--jinja",
+            "--n-gpu-layers",
+            "999",
+            "--flash-attn",
+            "on",
+            "--ctx-size",
+            "262144",
+            "--parallel",
+            "5",
+            "--n-predict",
+            "16384",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--host",
+            "0.0.0.0"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "coding-bonsai-27b": {
+      "pinned": false,
+      "idle_timeout_seconds": 21600,
+      "candidates": [
+        {
+          "engine": "systemB-llama-bonsai-cuda13",
+          "gpu_group": "systemB-gpu0-swappables",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "C:\\dev\\mtptest\\bonsai\\models\\Ternary-Bonsai-2-27B-PQ2_0-MTP.gguf",
+          "args": [
+            "--jinja",
+            "--n-gpu-layers",
+            "99",
+            "--flash-attn",
+            "on",
+            "--ctx-size",
+            "262144",
+            "--parallel",
+            "1",
+            "--n-predict",
+            "16384",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--spec-type draft-mtp",
+            "--spec-draft-n-max 1",
+            "--host",
+            "0.0.0.0"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "nomic-embed-systemB": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "ollama-systemB",
+          "gpu_group": "systemB-gpu0-alwaysOn",
+          "port": 11434,
+          "model_ref": "nomic-embed-text:latest",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "embed",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "bonsai-4b": {
+      "pinned": false,
+      "idle_timeout_seconds": 60,
+      "candidates": [
+        {
+          "engine": "llama-prism",
+          "gpu_group": "systemA-gpu0-swappables2",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "/home/lalamo/Work/ModelTesting/models/Ternary-Bonsai-4B-Q2_0_g64.gguf",
+          "args": [
+            "--ctx-size",
+            "20480",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--n-gpu-layers",
+            "99",
+            "--parallel",
+            "1",
+            "--host",
+            "0.0.0.0",
+            "--jinja",
+            "--alias",
+            "Ternary-Bonsai-4B-Q2_0_g64"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "bonsai-4b-6x8k": {
+      "pinned": false,
       "idle_timeout_seconds": 900,
       "candidates": [
         {
-          "engine": "llamacpp-buildA",
-          "model_path": "/models/qwen2.5-72b-q4.gguf",
-          "port": 8081,
-          "args": ["--ctx-size", "8192"],
-          "gpu_group": "sleek-gpu0"
-        },
-        {
-          "engine": "llamacpp-monolith-b",
-          "model_path": "D:\\models\\qwen2.5-72b-q4.gguf",
-          "port": 8081,
-          "gpu_group": "monolith-gpu0"
+          "engine": "llama-prism",
+          "gpu_group": "systemA-gpu0-swappables2",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "/home/lalamo/Work/ModelTesting/models/Ternary-Bonsai-4B-Q2_0_g64.gguf",
+          "args": [
+            "--ctx-size",
+            "49152",
+            "--parallel",
+            "6",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--n-gpu-layers",
+            "99",
+            "--host",
+            "0.0.0.0",
+            "--jinja",
+            "--alias",
+            "Ternary-Bonsai-4B-Q2_0_g64"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
         }
-      ]
+      ],
+      "depends_on": []
+    },
+    "agentflow-planner-3b": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "llama-prism",
+          "gpu_group": "systemA-gpu0-swappables2",
+          "port": 8090,
+          "model_ref": null,
+          "model_path": "/home/lalamo/Work/ModelTesting/models/AgentFlow-Planner-3B.Q4_K_M.gguf",
+          "args": [
+            "--ctx-size",
+            "16384",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--n-gpu-layers",
+            "99",
+            "--parallel",
+            "1",
+            "--host",
+            "0.0.0.0",
+            "--jinja",
+            "--alias",
+            "AgentFlow-Planner-3B-Q4_K_M"
+          ],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "freetoken-proxy": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "python-systemC",
+          "gpu_group": "systemC-gpu0",
+          "port": 8080,
+          "model_ref": null,
+          "model_path": null,
+          "args": [
+            "-u",
+            "c:\\dev\\freetoken\\scripts\\kv_proxy.py"
+          ],
+          "ollama_task": "generate",
+          "health_check": {
+            "method": "GET",
+            "path": "/health",
+            "body": null
+          }
+        }
+      ],
+      "depends_on": []
+    },
+    "qwen-7b-systemB": {
+      "pinned": false,
+      "idle_timeout_seconds": 60,
+      "candidates": [
+        {
+          "engine": "ollama-systemB",
+          "gpu_group": "systemB-gpu0-swappables",
+          "port": 11434,
+          "model_ref": "qwen2.5:7b-instruct",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "text": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "ollama-systemC",
+          "gpu_group": "systemC-gpu0",
+          "port": 11434,
+          "model_ref": "cydonia-story",
+          "model_path": null,
+          "args": [],
+          "ollama_task": "generate",
+          "health_check": null
+        }
+      ],
+      "depends_on": []
+    },
+    "image": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "swarmui-systemC",
+          "gpu_group": "systemC-gpu0",
+          "port": 7801,
+          "model_ref": null,
+          "model_path": null,
+          "args": [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "c:\\dev\\SwarmUI\\SwarmUI\\launch-windows-dev.ps1",
+            "--host",
+            "0.0.0.0"
+          ],
+          "ollama_task": "generate",
+          "health_check": {
+            "method": "POST",
+            "path": "/API/GetNewSession",
+            "body": {}
+          }
+        }
+      ],
+      "depends_on": []
+    },
+    "qwen_turbo": {
+      "pinned": false,
+      "idle_timeout_seconds": null,
+      "candidates": [
+        {
+          "engine": "qwen-turbo-systemC",
+          "gpu_group": "systemC-gpu0",
+          "port": 8099,
+          "model_ref": null,
+          "model_path": null,
+          "args": [
+            "quant_server.py"
+          ],
+          "ollama_task": "generate",
+          "health_check": {
+            "method": "GET",
+            "path": "/health",
+            "body": null
+          }
+        }
+      ],
+      "depends_on": []
     }
+  },
+  "groups": {
+    "pi-dev": [
+      "coding-bonsai-27b",
+      "decision-4b"
+    ]
   }
 }

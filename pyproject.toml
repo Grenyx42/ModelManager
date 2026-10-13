@@ -2,6 +2,11 @@
 name = "modelmanager"
 version = "0.1.0"
 description = "Coordinator for LLM inference engines (Ollama, llama.cpp) across multiple GPU machines"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Wade Hought" },
+]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

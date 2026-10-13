@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
+from ..errors import CommandTimeoutError
 from .base import CommandResult, Runner
 
 
@@ -20,11 +23,17 @@ class LocalRunner(Runner):
         self._children: dict[int, subprocess.Popen] = {}
 
     def run(self, cmd: list[str], timeout: float | None = 30) -> CommandResult:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise CommandTimeoutError(f"command timed out after {timeout}s: {cmd!r}") from exc
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
     def run_shell(self, cmd: str, timeout: float | None = 30) -> CommandResult:
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise CommandTimeoutError(f"command timed out after {timeout}s: {cmd!r}") from exc
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
     def start_background(
@@ -36,6 +45,17 @@ class LocalRunner(Runner):
         cwd: str | None = None,
     ) -> int:
         log_fh = open(log_path, "ab")
+        # Written into the same log a caller tails/views for this model - so
+        # "why won't this load" starts with "what did we actually run", not a
+        # guess from the registry definition, and each restart's line stays
+        # in the log's history alongside its own output (append mode, never
+        # overwritten by the next launch).
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        header = f"[{timestamp}] launching: {shlex.join(cmd)}"
+        if cwd:
+            header += f" (cwd={cwd})"
+        log_fh.write((header + "\n").encode())
+        log_fh.flush()
         env = {**os.environ, **extra_env} if extra_env else None
         proc = subprocess.Popen(
             cmd,

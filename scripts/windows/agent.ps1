@@ -22,6 +22,14 @@ $payload = $json | ConvertFrom-Json
 function Get-PidPath($name) { Join-Path $pidDir "$name.pid" }
 function Get-LogPath($name) { Join-Path $logDir "$name.log" }
 function Get-ErrLogPath($name) { Join-Path $logDir "$name.err.log" }
+# Start-Process's -RedirectStandardOutput/-Error truncate $logPath/$errLogPath
+# the instant the launched process opens, so a header written straight into
+# either would just be wiped out - kept in its own sidecar instead, and the
+# "logs" action below prepends it. Only the latest launch's line (not a
+# history like the local-runner log gets), since each Windows launch already
+# starts $logPath fresh the same way.
+function Get-CmdlinePath($name) { Join-Path $logDir "$name.cmdline" }
+function Get-PortPath($name) { Join-Path $pidDir "$name.port" }
 
 switch ($Action) {
     "start" {
@@ -34,9 +42,15 @@ switch ($Action) {
         $logPath = Get-LogPath $name
         $errLogPath = Get-ErrLogPath $name
         $pidPath = Get-PidPath $name
+        $cmdlinePath = Get-CmdlinePath $name
         if (Test-Path $pidPath) { Remove-Item $pidPath -ErrorAction SilentlyContinue }
 
         function Quote-Literal($value) { "'" + ($value -replace "'", "''") + "'" }
+
+        function Quote-Display($value) { if ($value -match '\s') { '"' + $value + '"' } else { $value } }
+        $displayArgs = ($argList | ForEach-Object { Quote-Display $_ }) -join ' '
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Set-Content -Path $cmdlinePath -Value "[$timestamp] launching: $(Quote-Display $binary) $displayArgs"
 
         # Env vars go inside the generated launcher script below (applied to
         # *its* process before it starts the model), not here - anything set
@@ -102,7 +116,29 @@ Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
             exit 1
         }
 
-        @{ pid = [int]$modelPid; log_path = $logPath } | ConvertTo-Json -Compress
+        # Start-Process -PassThru only confirms Windows created the process,
+        # not that it stayed up - a bad launch (missing model file, port
+        # already in use, a GPU/driver error, a bad CLI flag) typically
+        # crashes within a second or two, well before a large model would
+        # actually finish loading. Give it that long, then check again
+        # before declaring success, so a caller can't be told a dead process
+        # is running.
+        Start-Sleep -Milliseconds 1500
+        $proc = Get-Process -Id $modelPid -ErrorAction SilentlyContinue
+        if (-not $proc) {
+            Remove-Item $pidPath -ErrorAction SilentlyContinue
+            $cmdlineText = ""
+            if (Test-Path $cmdlinePath) { $cmdlineText = Get-Content -Path $cmdlinePath -Raw }
+            $errTail = ""
+            if (Test-Path $errLogPath) { $errTail = (Get-Content -Path $errLogPath -Tail 20) -join "`n" }
+            Write-Error "$name exited immediately after launching (crashed on startup). $cmdlineText$(if ($errTail) { "`n$errTail" })"
+            exit 1
+        }
+
+        if ($payload.port) {
+            Set-Content -Path (Get-PortPath $name) -Value ([int]$payload.port)
+        }
+        @{ pid = [int]$modelPid; log_path = $logPath; port = $payload.port } | ConvertTo-Json -Compress
     }
     "stop" {
         $name = $payload.name
@@ -112,6 +148,7 @@ Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
             Remove-Item $pidPath -ErrorAction SilentlyContinue
         }
+        Remove-Item (Get-PortPath $name) -ErrorAction SilentlyContinue
         @{ status = "stopped" } | ConvertTo-Json -Compress
     }
     "status" {
@@ -124,7 +161,10 @@ Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
             $procId = Get-Content $pidPath
             $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
             if ($proc) {
-                @{ running = $true; pid = [int]$procId } | ConvertTo-Json -Compress
+                $portPath = Get-PortPath $name
+                $port = $null
+                if (Test-Path $portPath) { $port = [int](Get-Content $portPath) }
+                @{ running = $true; pid = [int]$procId; port = $port } | ConvertTo-Json -Compress
             }
             else {
                 Remove-Item $pidPath -ErrorAction SilentlyContinue
@@ -132,12 +172,23 @@ Set-Content -Path $(Quote-Literal $pidPath) -Value `$proc.Id
             }
         }
     }
+    "check-port" {
+        $port = [int]$payload.port
+        $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
+        if ($conn) {
+            Write-Error "port $port is already in use"
+            exit 1
+        }
+        @{ free = $true } | ConvertTo-Json -Compress
+    }
     "logs" {
         $name = $payload.name
         $lines = 200
         if ($payload.lines) { $lines = [int]$payload.lines }
         $logPath = Get-LogPath $name
         $errLogPath = Get-ErrLogPath $name
+        $cmdlinePath = Get-CmdlinePath $name
+        if (Test-Path $cmdlinePath) { Get-Content -Path $cmdlinePath }
         if (Test-Path $logPath) { Get-Content -Path $logPath -Tail $lines }
         if (Test-Path $errLogPath) {
             Write-Output "--- stderr ---"

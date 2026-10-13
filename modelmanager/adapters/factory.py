@@ -7,6 +7,7 @@ from ..runners.ssh import SSHRunner
 from .base import EngineAdapter
 from .llamacpp import LlamaCppAdapter
 from .ollama import OllamaAdapter
+from .process import ProcessAdapter
 
 
 def build_runner(system: SystemConfig) -> Runner:
@@ -21,6 +22,8 @@ def build_adapter(engine_name: str, registry: Registry) -> EngineAdapter:
     runner = build_runner(system)
     if engine.type == "ollama":
         return OllamaAdapter(engine_name, engine, runner)
+    if engine.type == "process":
+        return ProcessAdapter(engine, system, runner)
     return LlamaCppAdapter(engine, system, runner)
 
 
