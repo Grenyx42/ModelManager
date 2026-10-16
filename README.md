@@ -152,9 +152,12 @@ pytest
 (by design - see the [Omarchy plugin docs](https://plugins.omarchy.org/publish.html)).
 Enabling the plugin before running `./scripts/setup.sh` is fine though - the
 panel detects the backend isn't up yet and shows a "Run setup now" button
-(and, once a model's configured, offers to link
-[`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md) into a coding
-agent) right there, instead of just sitting empty.
+right there, instead of just sitting empty. While the registry's still
+unconfigured it also offers, as checkboxes applied by that same button:
+linking [`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md) into
+a coding agent, and registering a model you already have pulled in Ollama
+(see `scripts/register-ollama-model.sh` - it doesn't download anything,
+just points the registry at whichever model `ollama list` already shows).
 `scripts/install-omarchy-plugin.sh` also checks for this and warns if it's
 missing, for the dev-sync workflow below.
 

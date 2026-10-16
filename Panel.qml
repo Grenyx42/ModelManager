@@ -91,6 +91,7 @@ Panel {
   // the same click instead of a separate step that's easy to miss.
   readonly property string setupShPath: String(Qt.resolvedUrl("scripts/setup.sh")).substring(7)
   readonly property string skillDirPath: String(Qt.resolvedUrl("skills/modelmanager")).substring(7)
+  readonly property string ollamaRegisterShPath: String(Qt.resolvedUrl("scripts/register-ollama-model.sh")).substring(7)
 
   property bool setupRunning: false
   // "" (not run yet) | "ok" | an error string to show in red.
@@ -111,6 +112,17 @@ Panel {
   // "" (not applied yet) | "skipped" (neither box checked) | a "claude:
   // linked; codex: linked"-style summary built from skillLinkDoneList.
   property string skillLinkResult: ""
+
+  // Doesn't download anything - anyone installing this plugin almost
+  // certainly already has Ollama running models, that's the point of
+  // wanting a coordinator. Just points it at whichever model Ollama's own
+  // /api/tags already lists (see scripts/register-ollama-model.sh).
+  property bool registerOllamaChecked: false
+  property bool ollamaRegisterRunning: false
+  // "" (not applied yet) | "skipped" (box unchecked) | the script's own
+  // stdout/stderr - a success line naming the registered model, or why it
+  // couldn't (no Ollama found, curl/jq missing, a put that failed).
+  property string ollamaRegisterResult: ""
 
   // Live progress while setupProc runs - setupOut/setupErr use
   // waitForEnd: false specifically so this updates in real time instead of
@@ -138,7 +150,17 @@ Panel {
       setupProc.running = true
     } else {
       root.applyPendingSkillLinks()
+      root.applyPendingOllamaRegistration()
     }
+  }
+
+  function applyPendingOllamaRegistration() {
+    if (!root.registerOllamaChecked) { root.ollamaRegisterResult = "skipped"; return }
+    if (ollamaRegisterProc.running) return
+    root.ollamaRegisterRunning = true
+    root.ollamaRegisterResult = ""
+    ollamaRegisterProc.command = ["sh", "-c", "exec \"$0\" \"$@\"", root.ollamaRegisterShPath, root.mmBin]
+    ollamaRegisterProc.running = true
   }
 
   function applyPendingSkillLinks() {
@@ -884,6 +906,7 @@ Panel {
         root.refresh()
         root.checkFreshInstall()
         root.applyPendingSkillLinks()
+        root.applyPendingOllamaRegistration()
       } else if (root.setupResult === "") {
         root.setupResult = "setup.sh failed (exit " + code + ")"
       }
@@ -911,6 +934,21 @@ Panel {
       ])
       skillLinkProc.lastStderr = ""
       root.processSkillLinkQueue()
+    }
+  }
+
+  Process {
+    id: ollamaRegisterProc
+    stdout: StdioCollector { id: ollamaRegisterOut; waitForEnd: true }
+    stderr: StdioCollector {
+      id: ollamaRegisterErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.ollamaRegisterResult = text.trim() }
+    }
+    onExited: (code) => {
+      root.ollamaRegisterRunning = false
+      if (code === 0) root.ollamaRegisterResult = ollamaRegisterOut.text.trim()
+      else if (root.ollamaRegisterResult === "") root.ollamaRegisterResult = "failed (exit " + code + ")"
     }
   }
 
@@ -1460,15 +1498,43 @@ Panel {
             }
           }
 
+          Column {
+            visible: root.registryIsDefault && root.ollamaRegisterResult === ""
+            width: parent.width
+            spacing: Style.space(2)
+
+            Text {
+              text: "Already running Ollama with a model pulled? Register one for a"
+                + " quick first test - doesn't download anything, just points at"
+                + " whichever model Ollama already has:"
+              color: root.bar ? root.bar.foreground : Color.foreground
+              wrapMode: Text.Wrap
+              width: parent.width
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Row {
+              spacing: Style.space(8)
+              Button {
+                text: (root.registerOllamaChecked ? "☑ " : "☐ ") + "Register an existing Ollama model"
+                foreground: root.registerOllamaChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+                bordered: true
+                onClicked: root.registerOllamaChecked = !root.registerOllamaChecked
+              }
+            }
+          }
+
           Row {
             spacing: Style.space(8)
 
             Button {
               text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
-                : (root.backendUnreachable ? "Run setup now" : "Link skill now")
-              enabled: !root.setupRunning && !root.skillLinkRunning
+                : root.ollamaRegisterRunning ? "Registering..."
+                : (root.backendUnreachable ? "Run setup now" : "Apply")
+              enabled: !root.setupRunning && !root.skillLinkRunning && !root.ollamaRegisterRunning
               bordered: true
-              visible: root.setupResult !== "ok" || (root.registryIsDefault && root.skillLinkResult === "")
+              visible: root.setupResult !== "ok" || (root.registryIsDefault
+                && (root.skillLinkResult === "" || root.ollamaRegisterResult === ""))
               onClicked: root.startSetupAction()
             }
           }
@@ -1495,6 +1561,16 @@ Panel {
             visible: root.skillLinkResult !== "" && root.skillLinkResult !== "skipped"
             text: root.skillLinkResult
             color: root.skillLinkResult.indexOf("failed") !== -1
+              ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
+            wrapMode: Text.Wrap
+            width: parent.width
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: root.ollamaRegisterResult !== "" && root.ollamaRegisterResult !== "skipped"
+            text: root.ollamaRegisterResult
+            color: (root.ollamaRegisterResult.indexOf("failed") !== -1 || root.ollamaRegisterResult.indexOf("No Ollama") !== -1)
               ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
             wrapMode: Text.Wrap
             width: parent.width
