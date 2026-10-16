@@ -54,6 +54,22 @@ No real `registry.json`, GPU, or remote box is needed to run the test suite -
 fake `Runner`/registry fixture (see `tests/test_manager.py::build_registry`),
 not real processes or SSH.
 
+If you're testing against the *live* coordinator (`modelmanager serve`, or
+the bar widget) rather than just the test suite, note that
+`scripts/setup.sh` installs into its own separate runtime venv
+(`~/.local/share/modelmanager/venv`) as a plain install, not editable - a
+code change there needs `./scripts/setup.sh` re-run (it always does a
+`--force-reinstall`) to actually take effect, unlike this `.venv`. That's
+deliberate: an editable install's import machinery points permanently back
+at wherever it was installed *from*, which on a real marketplace install is
+`~/.config/omarchy/plugins/<id>` - a directory Omarchy's shell watches
+recursively and reloads the whole plugin on any change inside it. Every
+`modelmanager` invocation writes `__pycache__` wherever it imports from;
+editable + watched-directory together means every single CLI call
+retriggers a full plugin reload. Confirmed directly causing a reload storm
+that never let the panel reach a stable, rendered state - don't reintroduce
+`-e` for that venv specifically.
+
 ## Scope of the test suite
 
 `modelmanager/` (config, coordinator, adapters, runners) is unit tested and

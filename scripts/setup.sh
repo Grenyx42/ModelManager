@@ -40,8 +40,28 @@ if [[ ! -f "$LOCK" ]]; then
 fi
 echo "Installing dependencies from requirements.lock (digests verified)..."
 "$VENV_DIR/bin/pip" install -q --require-hashes -r "$LOCK"
-echo "Installing modelmanager itself (editable, from $REPO_DIR, no deps - already satisfied above)..."
-"$VENV_DIR/bin/pip" install -q --no-deps -e "$REPO_DIR"
+
+# NOT an editable install (-e) - an editable install's import machinery
+# points permanently back at $REPO_DIR itself, which on a marketplace
+# install *is* ~/.config/omarchy/plugins/<id> - a directory Omarchy's shell
+# watches recursively (inotifywait -m -r) and reloads the whole plugin on
+# any change inside it. Every `modelmanager` invocation (and this plugin's
+# bar widget invokes it constantly) writes/touches __pycache__ right there,
+# which retriggers the watcher, which reloads the plugin, which invokes
+# `modelmanager` again - confirmed directly causing a reload storm that
+# stops the panel from ever reaching a stable, rendered state. A plain
+# install copies the package into the venv's own site-packages instead,
+# so running it never touches the plugin's install directory again.
+# --force-reinstall so re-running this script (e.g. after `omarchy plugin
+# update`) always refreshes the copy even when pyproject.toml's version
+# string hasn't changed between commits - an editable install didn't need
+# this (it always read the live source), a plain one does. Also remove any
+# editable-install leftover from a previous version of this script, so an
+# existing install upgrading into this one actually stops hitting the
+# reload storm instead of silently keeping the old editable pointer.
+rm -f "$VENV_DIR"/lib/python*/site-packages/_editable_impl_modelmanager.pth
+echo "Installing modelmanager itself (from $REPO_DIR, no deps - already satisfied above)..."
+"$VENV_DIR/bin/pip" install -q --no-deps --force-reinstall "$REPO_DIR"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$CONFIG_DIR/registry.json" ]]; then
