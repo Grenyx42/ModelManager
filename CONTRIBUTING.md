@@ -66,6 +66,42 @@ The Omarchy plugin (`manifest.json`, `Panel.qml`) has no automated tests - it
 shells out to the CLI and renders QML, neither of which is practical to unit
 test here. Describe what you clicked and what you expected to see.
 
+### Developing the Omarchy plugin
+
+Editing `Panel.qml` or `manifest.json` in your own working copy?
+`scripts/install-omarchy-plugin.sh` re-syncs your live edits into
+`~/.config/omarchy/plugins/<id>` each time you run it:
+
+```bash
+scripts/install-omarchy-plugin.sh
+```
+
+That syncs this repo's plugin-relevant files to `~/.config/omarchy/plugins/<id>`
+(idempotent - safe to re-run; re-run it after editing `Panel.qml` to pick up
+the change), validates the manifest, reloads omarchy-shell's plugin registry,
+and enables it. A plain symlink isn't used here because `omarchy plugin
+validate` rejects any symlink inside the plugin folder, and a dev checkout's
+own `.venv` (for running tests above; unrelated to the runtime venv
+`scripts/setup.sh` creates) always has some. Default placement lands it in
+the bar's center section; move it with:
+
+```bash
+omarchy bar move <id> --section right
+```
+
+(`<id>` is the `id` field in `manifest.json`.)
+
+**Editing `Panel.qml`:** the "saving a file hot-reloads it" behavior turned
+out to be unreliable in practice - a `sed -i` edit (which rewrites via a
+temp file + rename) silently stopped the file-watcher from firing at all,
+and even `omarchy-shell shell rescanPlugins` and a disable/enable cycle kept
+running the previously-compiled version afterwards. If a change doesn't
+seem to take effect within a few seconds of saving, don't trust
+rescan/enable to fix it - run `omarchy-restart-shell` (kills and relaunches
+the one long-running quickshell process; safe, and preserves layout/lock
+state) and check `quickshell log -p /usr/share/omarchy/shell --tail 50` for
+warnings/errors afterwards.
+
 ### Scenarios worth thinking through for lifecycle/orchestration changes
 
 - Model already running and healthy.
@@ -144,8 +180,8 @@ covered, schema docs stay in sync). A couple of things it doesn't cover:
 - The REST API requires a bearer token over HTTPS on every request, with no
   exemptions (see `install_auth_middleware` in
   `modelmanager/coordinator/app.py`, `cmd_serve`'s TLS wiring in `cli.py`,
-  and the README's [Authentication & TLS](README.md#authentication--tls)
-  section) - both the auth requirement and the TLS requirement are security
+  and [Authentication & TLS](docs/deployment.md#authentication--tls))
+  - both the auth requirement and the TLS requirement are security
   boundaries, so changes to either (new exempt routes, weaker comparison,
   an http:// fallback, etc.) need the same scrutiny as any other
   security-relevant change. Still not a substitute for network controls:

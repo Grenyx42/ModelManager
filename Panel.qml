@@ -35,6 +35,19 @@ Panel {
     return override.length > 0 ? override : Quickshell.env("HOME") + "/.local/share/modelmanager/venv/bin/modelmanager"
   }
 
+  // A brand-new install (setup.sh never run) has no mmBin at all yet -
+  // Quickshell's Process never fires onExited for a genuinely missing
+  // binary (confirmed directly: just a "Process failed to start" warning
+  // on quickshell's own stderr, no QML signal at all), so every onExited
+  // handler below would silently never run and the panel would just sit
+  // empty forever with no error, no fresh-install guidance, nothing.
+  // Routing through a real shell (which always exists and always starts)
+  // turns a missing mmBin into an ordinary nonzero exit (127) with a
+  // stderr message, which onExited already knows how to handle.
+  function mmCommand(args) {
+    return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(args)
+  }
+
   // Resolved relative to this file's own install location - works unchanged
   // whether this is a dev checkout (repo root) or a marketplace install
   // (install-omarchy-plugin.sh's rsync includes registry.clean.json, same
@@ -245,7 +258,7 @@ Panel {
     if (ensureProc.running) return
     root.actionError = ""
     ensureProc.pendingName = name
-    ensureProc.command = [root.mmBin, "ensure", name]
+    ensureProc.command = root.mmCommand(["ensure", name])
     ensureProc.running = true
   }
 
@@ -253,7 +266,7 @@ Panel {
     if (stopProc.running) return
     root.actionError = ""
     stopProc.pendingName = name
-    stopProc.command = [root.mmBin, "stop", name]
+    stopProc.command = root.mmCommand(["stop", name])
     stopProc.running = true
   }
 
@@ -353,7 +366,7 @@ Panel {
     if (groupEnsureProc.running) return
     root.actionError = ""
     groupEnsureProc.pendingName = name
-    groupEnsureProc.command = [root.mmBin, "group-ensure", name]
+    groupEnsureProc.command = root.mmCommand(["group-ensure", name])
     groupEnsureProc.running = true
   }
 
@@ -361,7 +374,7 @@ Panel {
     if (groupStopProc.running) return
     root.actionError = ""
     groupStopProc.pendingName = name
-    groupStopProc.command = [root.mmBin, "group-stop", name]
+    groupStopProc.command = root.mmCommand(["group-stop", name])
     groupStopProc.running = true
   }
 
@@ -409,7 +422,7 @@ Panel {
   function openLogTerminal(name) {
     if (logPathProc.running) return
     pendingTerminalModel = name
-    logPathProc.command = [root.mmBin, "log-path", name]
+    logPathProc.command = root.mmCommand(["log-path", name])
     logPathProc.running = true
   }
 
@@ -472,7 +485,7 @@ Panel {
     }
     var sys = root.statsQueue.shift()
     statsSweepProc.pendingSystem = sys
-    statsSweepProc.command = [root.mmBin, "stats", sys]
+    statsSweepProc.command = root.mmCommand(["stats", sys])
     statsSweepProc.running = true
   }
 
@@ -730,7 +743,7 @@ Panel {
 
   Process {
     id: listProc
-    command: [root.mmBin, "list"]
+    command: root.mmCommand(["list"])
     stdout: StdioCollector {
       id: listOut
       waitForEnd: true
@@ -742,11 +755,15 @@ Panel {
       onStreamFinished: { if (text.trim() !== "") root.lastError = text.trim() }
     }
     // A missing/unreadable mmBin (venv never set up - see scripts/setup.sh)
-    // produces no stdout or stderr at all, just a nonzero exit - without
-    // this, the panel would silently sit empty forever with no indication
-    // why.
+    // now reaches here as a normal nonzero exit via mmCommand()'s sh
+    // wrapper (see its own comment) - sh's own "command not found"/"not
+    // executable" exit codes (127/126) always mean mmBin itself is the
+    // problem, so they take priority and overwrite lastError even if sh's
+    // raw stderr ("No such file or directory") already landed there first;
+    // without this, the panel would silently sit empty forever with no
+    // indication why.
     onExited: (code) => {
-      if (code !== 0 && root.lastError === "") {
+      if (code === 126 || code === 127 || (code !== 0 && root.lastError === "")) {
         root.lastError = "can't run " + root.mmBin + " - run this repo's scripts/setup.sh, or set MODELMANAGER_BIN if installed elsewhere"
         root.checkFreshInstall()
       }
@@ -761,13 +778,13 @@ Panel {
 
   Process {
     id: reloadStatusProc
-    command: [root.mmBin, "reload-status"]
+    command: root.mmCommand(["reload-status"])
     stdout: StdioCollector { id: reloadStatusOut; waitForEnd: true; onStreamFinished: root.parseReloadStatus(text) }
   }
 
   Process {
     id: systemsProc
-    command: [root.mmBin, "systems"]
+    command: root.mmCommand(["systems"])
     stdout: StdioCollector {
       id: systemsOut
       waitForEnd: true
@@ -777,7 +794,7 @@ Panel {
 
   Process {
     id: gpuGroupsProc
-    command: [root.mmBin, "config"]
+    command: root.mmCommand(["config"])
     stdout: StdioCollector {
       id: gpuGroupsOut
       waitForEnd: true
@@ -823,7 +840,7 @@ Panel {
 
   Process {
     id: groupsProc
-    command: [root.mmBin, "groups"]
+    command: root.mmCommand(["groups"])
     stdout: StdioCollector {
       id: groupsOut
       waitForEnd: true

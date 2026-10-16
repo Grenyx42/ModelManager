@@ -29,8 +29,9 @@ which box happens to have `qwen-72b` loaded this week.
   key auth already working, `~/.ssh/config` aliases) - ModelManager doesn't
   set that up or manage it. Don't expose the coordinator to the open internet.
 - The REST API requires a bearer token over HTTPS on every request - see
-  [Authentication & TLS](#authentication--tls) below. `scripts/setup.sh`
-  generates both automatically; there's no "running open" mode.
+  [Authentication & TLS](docs/deployment.md#authentication--tls).
+  `scripts/setup.sh` generates both automatically; there's no "running
+  open" mode.
 - It doesn't download or manage model weights - you point it at
   files/builds you already have.
 - The Omarchy bar plugin is optional and genuinely Omarchy-specific
@@ -87,7 +88,7 @@ starter config at `~/.config/modelmanager/registry.json` (copied from
 `registry.clean.json`), a REST API bearer token at
 `~/.config/modelmanager/token`, and a self-signed TLS cert/key at
 `~/.config/modelmanager/tls/` (see
-[Authentication & TLS](#authentication--tls)) - all of it lives at a fixed
+[Authentication & TLS](docs/deployment.md#authentication--tls)) - all of it lives at a fixed
 location outside this repo, not inside it, since this repo might be a
 throwaway dev clone, or it might be wherever `omarchy plugin
 add` happened to put it, and either way it can be replaced wholesale on an
@@ -105,8 +106,8 @@ skippable:
 - Whether to customize the coordinator's listen host/port (default
   `0.0.0.0:8778`) - writes `~/.config/modelmanager/env`, read by the
   systemd unit above as an `EnvironmentFile` (see
-  [Authentication & TLS](#authentication--tls) for the same mechanism
-  already used for the token/TLS paths). A custom port only takes effect
+  [Authentication & TLS](docs/deployment.md#authentication--tls) for the
+  same mechanism already used for the token/TLS paths). A custom port only takes effect
   for that systemd-managed process - also set `MODELMANAGER_PORT` wherever
   the CLI or bar widget run locally (see [Omarchy plugin](#omarchy-plugin));
   the script says so at the time if you pick a non-default port.
@@ -156,301 +157,34 @@ if it's missing.
 ### Run the coordinator
 
 `./scripts/setup.sh` (see [Setup](#setup) above) already installs
-`systemd/modelmanager.service` as a user unit and starts it for you - this
-section is for running it some other way, or customizing that unit.
+`systemd/modelmanager.service` as a user unit and starts it for you.
 
 ```bash
 modelmanager serve --port 8778   # binds 0.0.0.0 by default - reachable from systemB, systemC, etc.
 ```
 
 `--host`/`--port` default to the `MODELMANAGER_HOST`/`MODELMANAGER_PORT` env
-vars when set, else `0.0.0.0`/`8778` - a flag always wins over either. Serves
-HTTPS (self-signed cert from `./scripts/setup.sh` - see
-[Authentication & TLS](#authentication--tls)) and refuses to start at all if
-that cert doesn't exist yet. Binding `0.0.0.0` means the REST API is
-*reachable* by anything that can reach this box - on this setup that's the
-tailnet, gated by Tailscale itself rather than anything in this app - but
-every request still needs the bearer token below, so reachable isn't the
-same as usable. Pass `--host 127.0.0.1` (or set `MODELMANAGER_HOST=127.0.0.1`)
-instead if you want it local-only as well.
-
-`systemA`'s system entry in `registry.json` needs `"advertise_host": "systemA"`
-(its Tailscale name) for this to actually work end-to-end: without it,
-`ensure`/`acquire` on a model running locally would hand a remote caller
-back `{"host": "localhost", ...}`, which means *them*, not systemA.
-
-If you ever need to install it by hand instead (the unit so pinned models,
-e.g. an embedding model, come up automatically):
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/modelmanager.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now modelmanager.service
-```
-
-That unit already points at the fixed venv/registry locations `scripts/setup.sh`
-and `default_registry_path()` use, so it works as-is regardless of where this
-repo was cloned. It also reads `~/.config/modelmanager/env` as an
-`EnvironmentFile` (missing is fine, nothing requires it) - put
-`MODELMANAGER_HOST=...`/`MODELMANAGER_PORT=...`/`MODELMANAGER_REGISTRY=...`/etc.
-in there (`scripts/setup.sh` offers to write the first two interactively) to
-override any of `serve`'s defaults without touching the unit file itself,
-then `systemctl --user daemon-reload && systemctl --user restart modelmanager`.
-
-A `systemctl --user` unit only starts once *some* login session for that user
-exists - fine for a desktop machine you're normally logged into, but if this
-box might reboot unattended (no graphical login happening automatically),
-also run `loginctl enable-linger $(whoami)` once so the user service manager
-itself starts at boot regardless, and the coordinator (and any pinned models)
-comes back without you logging in first.
-
-### Authentication & TLS
-
-Every REST request needs `Authorization: Bearer <token>` over HTTPS - no
-exception for a "just reading" endpoint, and no way to run the coordinator
-without both configured. `./scripts/setup.sh` generates both automatically
-on first run - the token at `~/.config/modelmanager/token` (0600), a
-self-signed TLS cert/key at `~/.config/modelmanager/tls/` (key 0600) - same
-XDG-style fixed location as `registry.json`. The CLI picks both up with no
-configuration of its own, and since `Panel.qml` only ever shells out to the
-CLI, the bar plugin authenticates (and verifies TLS) for free too - this
-only matters to you if something *other* than the CLI/plugin needs to call
-the REST API directly (your own app, a script):
-
-```bash
-modelmanager auth show      # print the current token (and where it came from)
-modelmanager auth rotate    # generate and switch to a new one, no restart needed
-```
-
-A few things worth knowing:
-
-- **`MODELMANAGER_TOKEN`** (env var) overrides the token file entirely, for
-  both the coordinator and the CLI - useful for a systemd `EnvironmentFile`
-  (`~/.config/modelmanager/env` - see [Run the coordinator](#run-the-coordinator))
-  or a container secret instead of a file on disk. Likewise
-  `MODELMANAGER_TLS_CERT_PATH`/`MODELMANAGER_TLS_KEY_PATH` for the cert/key,
-  and `MODELMANAGER_HOST`/`MODELMANAGER_PORT` for what `serve` binds to.
-- **Rotating the token takes effect immediately** - the coordinator reads it
-  fresh on every request rather than caching it at startup, so there's
-  nothing to restart after `modelmanager auth rotate`. Update whatever else
-  holds the old value (another app, a saved `curl` command) at the same time,
-  since it'll start getting 401s the instant you rotate.
-- **The token doesn't expire** - it's valid until you manually rotate it.
-  That's a deliberate simplicity tradeoff for a single-operator home-lab
-  tool, not an oversight; treat it like an SSH private key, not a
-  low-stakes API key, since holding it means being able to start/stop
-  anything and rewrite the registry (see the architecture notes above on
-  what that implies for remote systems).
-- **The cert is self-signed** (there's no public CA to ask for a box that
-  only your own machines ever talk to) and covers `localhost`, `127.0.0.1`,
-  and this machine's own hostname - not a Tailscale MagicDNS name, which
-  `setup.sh` has no reliable way to know in advance. A caller on another box
-  needs its own copy of `tls/cert.pem` to verify against (the CLI falls back
-  to the system CA bundle if it doesn't have one, which will fail closed
-  with a clear TLS error, not silently accept an unverified connection).
-- **An existing install upgrading into this version** won't have a
-  token/cert yet, and the coordinator will refuse to start (missing cert) or
-  refuse every request with a clear `AUTH_NOT_CONFIGURED` error (missing
-  token) until they exist - re-run `./scripts/setup.sh` (safe, idempotent),
-  or `modelmanager auth rotate` for just the token.
-- This closes the "anyone on the LAN can read or hit the coordinator's REST
-  API" gap, but it's not a substitute for a trusted network - keep the
-  coordinator off the open internet regardless.
-
-**Planned:** today it's one token with full access to everything. Scoped,
-per-token access to specific models is on the roadmap - mainly so a model
-can be shared with friends on your tailnet without handing them the keys to
-your whole fleet.
-
-### Using `modelmanager` from another machine
-
-The CLI defaults to `https://127.0.0.1:8778` - i.e. "the coordinator is on
-this same box" - which is correct for the box actually running it, but not
-for a second machine (another box of yours, or a friend's, on the same
-tailnet) that wants to call a coordinator running elsewhere. Three things
-make that work, all copied from the coordinator box's
-`~/.config/modelmanager/`:
-
-1. **Point it at the right host.** Set `MODELMANAGER_URL` to the
-   coordinator's reachable address - its Tailscale name/IP, not `localhost`:
-   ```bash
-   export MODELMANAGER_URL=https://systemA:8778
-   ```
-   Unset (the default), every `modelmanager` command stays local-only - it
-   never silently reaches across the network for you.
-2. **Copy the token** (`~/.config/modelmanager/token` on the coordinator
-   box) and set it on this one:
-   ```bash
-   export MODELMANAGER_TOKEN=<the token value - `modelmanager auth show` on the coordinator box prints it>
-   ```
-3. **Copy the cert** (`~/.config/modelmanager/tls/cert.pem` - not `key.pem`,
-   that one never leaves the coordinator box) somewhere on this machine and
-   point at it:
-   ```bash
-   export MODELMANAGER_TLS_CERT_PATH=/path/to/your/copy/of/cert.pem
-   ```
-   Skip this and the CLI falls back to the system CA bundle, which won't
-   recognize a self-signed cert - every call fails closed with a clear TLS
-   error rather than silently trusting whatever's on the other end.
-
-All three are plain env vars, so a shell profile or `.env` on that second
-machine is enough to make every bare `modelmanager ...` command there behave
-exactly like it does locally on the coordinator box. None of this applies to
-the Omarchy bar plugin - it only ever talks to a coordinator running on its
-own box (see the architecture notes near the top), so it has nothing to
-configure here.
+vars when set, else `0.0.0.0`/`8778` - a flag always wins over either.
+Serves HTTPS and refuses to start without a TLS cert (see
+[Authentication & TLS](docs/deployment.md#authentication--tls)); every
+request also needs a bearer token, so "reachable" isn't the same as
+"usable." See [docs/deployment.md](docs/deployment.md) for the manual
+systemd install, overriding the listen address via an `EnvironmentFile`,
+reaching the coordinator from another machine, and Windows boxes.
 
 ### CLI
 
 ```bash
-modelmanager doctor --pretty      # run this first: system reachability + is every model's binary/model file actually there
-modelmanager list                 # all model definitions + live status, --pretty for a human-readable view
-modelmanager ensure qwen-7b      # start/swap as needed, prints {"host","port"} - no usage lease
-modelmanager ensure qwen-7b --dry-run --pretty   # preview what ensure would do (keep/start/swap/blocked) without doing it
-modelmanager verify qwen-7b --pretty     # confirm it's actually answering requests, not just "started"
-modelmanager acquire qwen-7b --ttl 300   # like ensure, but takes a lease: can't be evicted/swapped while held
-modelmanager release qwen-7b             # end a lease (or all leases if --lease-id omitted)
-modelmanager stop qwen-7b                # --force to stop even if a lease is held
-modelmanager logs qwen-7b --lines 100
-modelmanager log-path qwen-7b     # {system,control,os,ssh_host,path} - where its logs actually live, for tailing directly
-modelmanager systems              # configured systems
-modelmanager stats systemB --pretty       # GPU/VRAM via nvidia-smi (local or SSH)
-modelmanager help                 # full registry schema + API reference, for agents/scripts
-modelmanager version              # API/wire-contract version
-modelmanager validate @registry.json      # check a full registry document without applying it (catches every error in one pass)
-modelmanager put models qwen-7b '{"candidates": [...]}'   # create/update an entry (see `help`)
-modelmanager put engines my-engine @path/to/body.json      # body can also come from a file
-modelmanager config                                        # full current registry as one document
-modelmanager reload                                        # re-read registry.json from disk, apply live
-modelmanager deploy-agent [system] [--force]               # sync scripts/windows/agent.ps1 to windows/ssh boxes
-modelmanager access-log --lines 100                         # recent REST requests: client, method, path, status, duration
-modelmanager lifecycle-log --lines 100                       # recent model crash/restart events, across every model
+modelmanager doctor --pretty    # run this first: system reachability + is every model's binary/model file actually there
+modelmanager list               # all model definitions + live status, --pretty for a human-readable view
+modelmanager ensure qwen-7b     # start/swap as needed, prints {"host","port"}
+modelmanager stop qwen-7b
+modelmanager help               # full registry schema + API reference, for agents/scripts
 ```
 
-A model definition can also declare `"depends_on": ["other-model-name"]` -
-`ensure`/`acquire` resolve every dependency first, recursively, before doing
-anything with the model itself (see `modelmanager help` for the full field
-description and cycle-detection rules).
-
-### Groups
-
-A group is a named set of existing model names (often spanning several
-systems) that belong to one workflow, so you can start/check/stop all of
-them with a single name instead of one call per model:
-
-```bash
-modelmanager put groups pi-dev '["coding-bonsai-27b", "agentflow-planner-3b", "decision-4b"]'
-modelmanager groups                        # list all groups
-```
-
-`ensure`, `verify`, `stop`, and `stats` all accept a group name directly - no
-separate command needed:
-
-```bash
-modelmanager ensure pi-dev      # best-effort: ensure() every member independently
-modelmanager verify pi-dev --pretty
-modelmanager stop pi-dev
-modelmanager stats pi-dev --pretty   # one entry per distinct system behind the group's models, not per model
-```
-
-Each is best-effort: one member's failure (offline box, gpu_group conflict,
-etc.) never blocks the rest, and the result reports every member
-individually. The explicit `group-ensure`/`group-verify`/`group-stop`/
-`group-stats` commands do the same thing and exist for scripts that want to
-be unambiguous about targeting a group rather than relying on the fallback.
-
-Incoming requests are logged separately from app logs, to
-`~/.local/state/modelmanager/access.log` (rotated at 5MB, 3 backups) -
-readable directly on systemA, via the CLI above, or `GET /v1/access-log` for a
-caller on another machine with no shell access to systemA.
-
-A background health check polls every active model's status every 5s; if
-one's active but no longer running (a crash - `--n-gpu-layers` mismatch, an
-OOM, whatever), it's restarted automatically via the same recovery path
-`ensure()` already used lazily, and the event is recorded to
-`~/.local/state/modelmanager/lifecycle.log` (same rotation, same CLI/REST
-pattern as the access log above). A model's own log (`logs`/`log-path`) still
-has the actual crash reason in its raw stdout/stderr; this is the compact,
-cross-model "when did X die and did it come back" timeline that's otherwise
-missing since there's no standalone crash marker in a raw process log.
-Note this is a genuine crash detector, not a substitute for
-`idle_timeout_seconds` - a model stopped by the idle sweep or an explicit
-`stop` has already cleared its own active state before this check ever runs,
-so it's left alone. Neither engine has its own idle-unload timer under our
-control: llama.cpp is a raw process with no timeout unless you add one to a
-candidate's own `args`, and the Ollama adapter always loads with
-`keep_alive=-1` and unloads explicitly - so an unexpectedly-dead model here is
-never "it expired," always "it crashed."
-
-`GET /v1/help` is meant to be self-sufficient: any harness, agent, or script can hit it
-first to learn the systems/engines/gpu_groups/models schema (fields, types,
-required/optional, examples) and every endpoint, then `POST /v1/{resource}/{name}`
-to create or update an entry directly - no need to hand-edit `registry.json`.
-Writes validate the whole registry (including cross-references) before
-accepting anything and persist atomically; an invalid write returns a
-specific 422 error and changes nothing.
-
-There's no delete endpoint by design: hand-edit `registry.json` to remove an
-entry, then `modelmanager reload` to apply it without restarting the
-coordinator. Reload stops any currently-active model whose definition was
-actually removed, drops cached adapters so changed engine/system config
-takes effect, and auto-starts anything newly pinned.
-
-Renaming an active model's key (instead of removing it) is safe too: reload
-detects a new, unfamiliar key with the exact same `candidates` as a
-disappeared one and treats it as a rename, carrying over the running
-state (active candidate, last-used clock, leases) instead of stopping the
-process and leaving the new name with no memory of it. This only kicks in
-for a model that was actually active at reload time and whose candidates
-match exactly - change the port/model/engine in the same edit and it's
-treated as a real remove+add instead.
-
-**Acquire/release vs ensure:** `ensure` just makes sure a model is loaded and
-refreshes its idle clock - a concurrent idle sweep or another model's request
-can still evict it once `idle_timeout_seconds` passes, even mid-use. Leaving
-`idle_timeout_seconds` null doesn't mean "never evicted" - the idle sweep
-leaves it alone forever (no timer to check), but another model's `ensure()`
-can still swap it out of its `gpu_group` the instant it actually needs that
-slot, with no idle grace period to wait out; only an active lease blocks
-that. Use `pinned: true` for a model that must never be evicted by anything.
-`acquire`
-additionally takes a time-boxed lease (default 300s, renewable by acquiring
-again) that makes the model un-evictable and un-swappable while held, for
-callers doing a longer piece of work; `release` ends the lease and starts the
-idle clock fresh from that moment instead of from the original acquire.
-Leases expire on their own if never released, so a crashed caller can't
-permanently pin a GPU slot.
-
-### Windows boxes
-
-Nothing to copy by hand: the coordinator deploys `scripts/windows/agent.ps1`
-itself to `~\.ModelManager\agent.ps1` (the SSH user's own home directory - the
-exact `C:\Users\<name>` path is resolved over SSH, never assumed) on every
-Windows system with `"control": "ssh"`, automatically and best-effort on
-every startup, skipping the upload if the file's already there unchanged.
-To push a change without restarting, or target one box:
-
-```bash
-modelmanager deploy-agent            # every windows/ssh system
-modelmanager deploy-agent systemB    # just one
-modelmanager deploy-agent systemB --force    # re-upload even if unchanged
-```
-
-Just make sure `ssh <that-host>` already works non-interactively (key auth,
-no passphrase prompt) - `~/.ssh/config` aliases are reused as-is.
-
-**Why `agent.ps1` launches via WMI instead of `Start-Process`:** Windows'
-OpenSSH assigns every SSH session's processes to a Job Object, and kills the
-whole job the instant the session closes - which is right after `agent.ps1`
-returns. A plain `Start-Process` child stays in that job and gets killed
-along with it, so the model would appear to start successfully and then die
-within moments, often with zero log output if it happened mid-load. WMI
-process creation (`Invoke-CimMethod ... Win32_Process Create`) makes
-`WmiPrvSE.exe` the parent instead, entirely outside that job, so the process
-survives past the SSH session ending - the actual point of starting a
-background service. Confirmed directly: a `Start-Process`-launched PID was
-gone the moment a fresh SSH connection checked it; a WMI-launched one wasn't.
+The full command list - leases (`acquire`/`release`), groups, logs,
+dependency resolution, dry-run, `validate`, `deploy-agent`, access/lifecycle
+logs - is in [docs/cli-reference.md](docs/cli-reference.md).
 
 ### Omarchy plugin
 
@@ -475,42 +209,10 @@ a terminal) still needs it set in whatever environment they run in too.
 **Installing it:** if you just want to use the plugin (not develop it),
 clone this repo or `omarchy plugin add <this-repo-url> --enable`, then run
 `scripts/setup.sh` from wherever it ended up. That's the whole install - no
-separate step needed to register it with omarchy-shell.
-
-**If you're developing the plugin itself** (editing `Panel.qml` or
-`manifest.json` in your own working copy), `scripts/install-omarchy-plugin.sh`
-re-syncs your live edits into `~/.config/omarchy/plugins/<id>` each time you
-run it:
-
-```bash
-scripts/install-omarchy-plugin.sh
-```
-
-That syncs this repo's plugin-relevant files to `~/.config/omarchy/plugins/<id>`
-(idempotent - safe to re-run; re-run it after editing `Panel.qml` to pick up
-the change), validates the manifest, reloads omarchy-shell's plugin registry,
-and enables it. A plain symlink isn't used here because `omarchy plugin
-validate` rejects any symlink inside the plugin folder, and a dev checkout's
-own `.venv` (for running tests - see CONTRIBUTING.md; unrelated to the
-runtime venv `scripts/setup.sh` creates) always has some. Default placement
-lands it in the bar's center section; move it with:
-
-```bash
-omarchy bar move <id> --section right
-```
-
-(`<id>` is the `id` field in `manifest.json`.)
-
-**Editing `Panel.qml`:** the "saving a file hot-reloads it" behavior turned
-out to be unreliable in practice - a `sed -i` edit (which rewrites via a
-temp file + rename) silently stopped the file-watcher from firing at all,
-and even `omarchy-shell shell rescanPlugins` and a disable/enable cycle kept
-running the previously-compiled version afterwards. If a change doesn't
-seem to take effect within a few seconds of saving, don't trust
-rescan/enable to fix it - run `omarchy-restart-shell` (kills and relaunches
-the one long-running quickshell process; safe, and preserves layout/lock
-state) and check `quickshell log -p /usr/share/omarchy/shell --tail 50` for
-warnings/errors afterwards.
+separate step needed to register it with omarchy-shell. Developing the
+plugin itself (editing `Panel.qml`/`manifest.json` in your own working
+copy, re-syncing a live install) is covered in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Settings:** `refreshIntervalSec` (default 15) controls how often the model
 list refreshes. Per-system GPU stats and per-model logs are fetched on
@@ -553,45 +255,9 @@ your first model for you.
 of my own (machine names and a stray local path changed), not a toy snippet,
 so it's worth skimming for how the pieces actually fit together (multiple
 engines per system, several models sharing a `gpu_group`, a `group`) before
-you start editing it into your own.
-
-None of the example file's models are `pinned`, deliberately - a pinned
-model auto-starts the moment the coordinator boots (see "Acquire/release vs
-ensure" above), which would fail loudly on a brand-new install before you've
-edited anything to match your own machines. Once you've pointed a model at
-something real, a standing dependency like an always-on embedding model
-looks like this:
-
-```json
-"nomic-embed": {
-  "pinned": true,
-  "candidates": [
-    { "engine": "ollama-systemA", "model_ref": "nomic-embed-text", "port": 11434, "gpu_group": "systemA-gpu0-alwaysOn", "ollama_task": "embed" }
-  ]
-}
-```
-
-An engine can set `"env": {...}` - extra environment variables merged in
-when the coordinator launches its process - and `"cwd": "..."` - the
-working directory to launch it from, if that matters for the build (e.g. it
-resolves a relative library path from there). For llama.cpp this always
-applies. Common `env` use: `LD_LIBRARY_PATH`, when a build's CUDA/cuBLAS
-libraries live somewhere non-standard (e.g. bundled inside a Python venv via
-a pip `nvidia-*` package rather than installed system-wide) - the
-coordinator launches processes with its own environment, not whatever a dev
-shell happened to have set.
-
-An `ollama` engine normally just talks to `base_url`, assuming a server is
-already running there (a system/Windows service, outside our control). Set
-`"binary"` (and usually `"cwd"`/`"env"`) on it too if that's not true - e.g.
-a custom Ollama build that isn't registered as a service anywhere - and the
-coordinator launches and manages `ollama serve` itself the first time a
-model on that engine is started, the same way it manages a raw llama.cpp
-process (PID/log file locally, or the Windows WMI-launcher agent over SSH).
-`base_url` still needs to be a host the coordinator can actually reach
-(e.g. `http://systemB:11434`, not `localhost`, when the server lives on a
-different box), and `OLLAMA_HOST` in `env` needs to match the port and bind
-address you want it listening on.
+you start editing it into your own. Field-level details not obvious from
+the example - `pinned` models, per-engine `env`/`cwd`, self-managed Ollama
+builds - are in [docs/registry-schema.md](docs/registry-schema.md).
 
 ## Dependencies
 
