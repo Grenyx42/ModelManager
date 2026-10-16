@@ -80,6 +80,45 @@ Panel {
   readonly property bool backendUnreachable: root.lastError.indexOf("cannot reach coordinator") !== -1
     || root.lastError.indexOf("can't run " + root.mmBin) !== -1
 
+  // Resolved the same way as registryCleanPath above - lets the "Run setup
+  // now" button below drive scripts/setup.sh directly from wherever this
+  // plugin is actually installed, instead of just telling the user to go
+  // find a terminal. Run with no TTY attached, setup.sh already detects
+  // that itself and skips its own interactive prompts (listen-address
+  // customization, agent-skill linking) - this button exists specifically
+  // to cover everything setup.sh does unattended; the skill-link buttons
+  // below cover the one thing it can't do headless.
+  readonly property string setupShPath: String(Qt.resolvedUrl("scripts/setup.sh")).substring(7)
+  readonly property string skillDirPath: String(Qt.resolvedUrl("skills/modelmanager")).substring(7)
+
+  property bool setupRunning: false
+  // "" (not run yet) | "ok" | an error string to show in red.
+  property string setupResult: ""
+
+  property bool skillLinkRunning: false
+  // "" (not chosen yet) | "linked" | "skipped" | an error string.
+  property string skillLinkResult: ""
+
+  function runSetup() {
+    if (setupProc.running) return
+    root.setupRunning = true
+    root.setupResult = ""
+    setupProc.command = ["sh", "-c", "exec \"$0\"", root.setupShPath]
+    setupProc.running = true
+  }
+
+  function linkSkill(agent) {
+    if (skillLinkProc.running) return
+    root.skillLinkRunning = true
+    root.skillLinkResult = ""
+    const dst = Quickshell.env("HOME") + "/." + agent + "/skills/modelmanager"
+    skillLinkProc.command = [
+      "sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && ln -sf \"$1\" \"$2\"",
+      "sh", root.skillDirPath, dst
+    ]
+    skillLinkProc.running = true
+  }
+
   property var models: []
   property var groupedModels: []
   // registry.json's top-level "groups": named model sets ("start my usual
@@ -777,6 +816,42 @@ Panel {
   }
 
   Process {
+    id: setupProc
+    stdout: StdioCollector { id: setupOut; waitForEnd: true }
+    stderr: StdioCollector {
+      id: setupErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.setupResult = text.trim() }
+    }
+    onExited: (code) => {
+      root.setupRunning = false
+      if (code === 0) {
+        // Overrides any benign stderr noise above - a zero exit from
+        // setup.sh's own `set -e` means it actually finished successfully.
+        root.setupResult = "ok"
+        root.refresh()
+        root.checkFreshInstall()
+      } else if (root.setupResult === "") {
+        root.setupResult = "setup.sh failed (exit " + code + ")"
+      }
+    }
+  }
+
+  Process {
+    id: skillLinkProc
+    stderr: StdioCollector {
+      id: skillLinkErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.skillLinkResult = text.trim() }
+    }
+    onExited: (code) => {
+      root.skillLinkRunning = false
+      if (code === 0 && root.skillLinkResult === "") root.skillLinkResult = "linked"
+      else if (code !== 0 && root.skillLinkResult === "") root.skillLinkResult = "link failed (exit " + code + ")"
+    }
+  }
+
+  Process {
     id: reloadStatusProc
     command: root.mmCommand(["reload-status"])
     stdout: StdioCollector { id: reloadStatusOut; waitForEnd: true; onStreamFinished: root.parseReloadStatus(text) }
@@ -928,7 +1003,7 @@ Panel {
     text: ""
     slotSize: Style.bar.iconSlot
     tooltipText: root.registryError !== "" ? root.registryError
-      : (root.backendUnreachable && root.registryIsDefault ? "ModelManager: first-time setup needed - click for details"
+      : (root.backendUnreachable ? "ModelManager: backend not running - click for details"
       : (root.lastError !== "" ? root.lastError : (root.runningCount + " model(s) running")))
     opacity: root.hasError && root.blinkPhase ? 0.25 : 1.0
     Behavior on opacity { NumberAnimation { duration: 150 } }
@@ -1256,13 +1331,20 @@ Panel {
           font.pixelSize: Style.font.caption
         }
 
+        // Shown whenever the backend itself isn't reachable. Independent of
+        // the registry-setup block below (not the same && condition the
+        // whole thing used to be gated on) because clicking "Run setup now"
+        // flips this to false the moment the coordinator comes up, but the
+        // registry stays the untouched clean default until a real model is
+        // added - the skill-link offer below needs to survive that, not
+        // disappear the instant the backend starts.
         Column {
-          visible: root.backendUnreachable && root.registryIsDefault
+          visible: root.backendUnreachable
           width: parent.width
-          spacing: Style.space(2)
+          spacing: Style.space(4)
 
           Text {
-            text: "First-time setup needed - the backend isn't running yet."
+            text: "Backend not running."
             color: Color.urgent
             font.bold: true
             wrapMode: Text.Wrap
@@ -1270,8 +1352,23 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
+
+          Row {
+            visible: root.setupResult !== "ok"
+            spacing: Style.space(8)
+
+            Button {
+              text: root.setupRunning ? "Running setup..." : "Run setup now"
+              enabled: !root.setupRunning
+              bordered: true
+              onClicked: root.runSetup()
+            }
+          }
           Text {
-            text: "1. Run ./scripts/setup.sh in the ModelManager repo (builds the backend, starts it as a systemd service, creates a starter registry.json)"
+            visible: root.setupResult !== "ok"
+            text: "Builds the backend, generates a token/TLS cert, and starts it as a"
+              + " systemd service (no custom listen port here - run"
+              + " ./scripts/setup.sh yourself in a terminal for that)."
             color: root.bar ? root.bar.foreground : Color.foreground
             wrapMode: Text.Wrap
             width: parent.width
@@ -1279,13 +1376,15 @@ Panel {
             font.pixelSize: Style.font.caption
           }
           Text {
-            text: "2. Point your coding agent at skills/modelmanager/SKILL.md to set up a model, or edit " + root.registryJsonPath + " yourself"
-            color: root.bar ? root.bar.foreground : Color.foreground
+            visible: root.setupResult !== "" && root.setupResult !== "ok"
+            text: root.setupResult
+            color: Color.urgent
             wrapMode: Text.Wrap
             width: parent.width
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
+
           Text {
             text: "(" + root.lastError + ")"
             color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
@@ -1296,8 +1395,71 @@ Panel {
           }
         }
 
+        // Shown as long as the registry is still the untouched clean
+        // default - i.e. nobody has described a real model yet - regardless
+        // of whether the backend above is up. Offering to link the skill
+        // asks every time this situation is seen (no persisted dismissal),
+        // same one-time-per-situation spirit as scripts/setup.sh's own
+        // prompt; "Skip" just hides it for this session.
+        Column {
+          visible: root.registryIsDefault && root.skillLinkResult === ""
+          width: parent.width
+          spacing: Style.space(4)
+
+          Text {
+            text: (root.backendUnreachable ? "2. " : "No model configured yet - ")
+              + "point your coding agent at skills/modelmanager/SKILL.md to set"
+              + " one up, or edit " + root.registryJsonPath + " yourself."
+            color: root.bar ? root.bar.foreground : Color.foreground
+            wrapMode: Text.Wrap
+            width: parent.width
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Row {
+            spacing: Style.space(8)
+
+            Button {
+              text: root.skillLinkRunning ? "Linking..." : "Link: Claude Code"
+              enabled: !root.skillLinkRunning
+              bordered: true
+              onClicked: root.linkSkill("claude")
+            }
+            Button {
+              text: root.skillLinkRunning ? "Linking..." : "Link: Codex"
+              enabled: !root.skillLinkRunning
+              bordered: true
+              onClicked: root.linkSkill("codex")
+            }
+            Button {
+              text: "Skip"
+              bordered: true
+              onClicked: root.skillLinkResult = "skipped"
+            }
+          }
+        }
         Text {
-          visible: root.lastError !== "" && !(root.backendUnreachable && root.registryIsDefault)
+          visible: root.skillLinkResult === "linked"
+          text: "Linked - your agent can see the skill now."
+          color: root.bar ? root.bar.foreground : Color.foreground
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: root.skillLinkResult !== "" && root.skillLinkResult !== "skipped" && root.skillLinkResult !== "linked"
+          text: root.skillLinkResult
+          color: Color.urgent
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          visible: root.lastError !== "" && !root.backendUnreachable
           text: root.lastError
           color: Color.urgent
           wrapMode: Text.Wrap

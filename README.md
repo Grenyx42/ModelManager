@@ -149,10 +149,14 @@ pytest
 
 **Note for the Omarchy plugin:** `Panel.qml` just shells out to the venv
 `scripts/setup.sh` creates; there's no install hook that runs this for you
-(by design - see the [Omarchy plugin docs](https://plugins.omarchy.org/publish.html)),
-so run `./scripts/setup.sh` *before* enabling the plugin, or it'll enable but
-show nothing. `scripts/install-omarchy-plugin.sh` checks for this and warns
-if it's missing.
+(by design - see the [Omarchy plugin docs](https://plugins.omarchy.org/publish.html)).
+Enabling the plugin before running `./scripts/setup.sh` is fine though - the
+panel detects the backend isn't up yet and shows a "Run setup now" button
+(and, once a model's configured, offers to link
+[`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md) into a coding
+agent) right there, instead of just sitting empty.
+`scripts/install-omarchy-plugin.sh` also checks for this and warns if it's
+missing, for the dev-sync workflow below.
 
 ### Run the coordinator
 

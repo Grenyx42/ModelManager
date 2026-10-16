@@ -102,6 +102,18 @@ the one long-running quickshell process; safe, and preserves layout/lock
 state) and check `quickshell log -p /usr/share/omarchy/shell --tail 50` for
 warnings/errors afterwards.
 
+**Same issue, different trigger:** testing the real marketplace path
+(`omarchy plugin remove <id>` then `omarchy plugin add <url> --enable`,
+not the dev-sync script above) hits this too. `omarchy-plugin-remove`
+already calls `omarchy-shell shell setPluginEnabled <id> false` and
+`rescanPlugins` itself (checked its source directly) - that's apparently
+not enough to evict Quickshell's compiled component cache, so a fresh
+install right after a remove can still silently run the *previous*
+install's `Panel.qml`. Confirmed directly while chasing a bug that looked
+like a real logic error but wasn't: run `omarchy-restart-shell` after any
+remove+reinstall cycle too, not just after editing `Panel.qml` in place -
+otherwise you'll be looking at stale behavior and not know it.
+
 ### Scenarios worth thinking through for lifecycle/orchestration changes
 
 - Model already running and healthy.
