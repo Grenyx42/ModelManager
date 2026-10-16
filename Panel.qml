@@ -96,6 +96,14 @@ Panel {
   // "" (not run yet) | "ok" | an error string to show in red.
   property string setupResult: ""
 
+  // Plain Buttons acting as toggles, not QtQuick.Controls CheckBox - that
+  // type has no precedent anywhere in this codebase or Omarchy's own shell
+  // (every other control here is qs.Ui's custom Button), and an unstyled
+  // control can render invisibly - or break a layout's height entirely -
+  // under a shell style that never expected it.
+  property bool linkClaudeChecked: false
+  property bool linkCodexChecked: false
+
   property bool skillLinkRunning: false
   property var skillLinkQueue: []
   property string skillLinkCurrentAgent: ""
@@ -135,8 +143,8 @@ Panel {
 
   function applyPendingSkillLinks() {
     root.skillLinkQueue = []
-    if (linkClaudeCheck.checked) root.skillLinkQueue.push("claude")
-    if (linkCodexCheck.checked) root.skillLinkQueue.push("codex")
+    if (root.linkClaudeChecked) root.skillLinkQueue.push("claude")
+    if (root.linkCodexChecked) root.skillLinkQueue.push("codex")
     root.skillLinkDoneList = []
     root.processSkillLinkQueue()
   }
@@ -1436,9 +1444,19 @@ Panel {
               font.pixelSize: Style.font.caption
             }
             Row {
-              spacing: Style.space(12)
-              CheckBox { id: linkClaudeCheck; text: "Claude Code" }
-              CheckBox { id: linkCodexCheck; text: "Codex" }
+              spacing: Style.space(8)
+              Button {
+                text: (root.linkClaudeChecked ? "☑ " : "☐ ") + "Claude Code"
+                foreground: root.linkClaudeChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+                bordered: true
+                onClicked: root.linkClaudeChecked = !root.linkClaudeChecked
+              }
+              Button {
+                text: (root.linkCodexChecked ? "☑ " : "☐ ") + "Codex"
+                foreground: root.linkCodexChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+                bordered: true
+                onClicked: root.linkCodexChecked = !root.linkCodexChecked
+              }
             }
           }
 
