@@ -80,14 +80,15 @@ Panel {
   readonly property bool backendUnreachable: root.lastError.indexOf("cannot reach coordinator") !== -1
     || root.lastError.indexOf("can't run " + root.mmBin) !== -1
 
-  // Resolved the same way as registryCleanPath above - lets the "Run setup
-  // now" button below drive scripts/setup.sh directly from wherever this
-  // plugin is actually installed, instead of just telling the user to go
-  // find a terminal. Run with no TTY attached, setup.sh already detects
-  // that itself and skips its own interactive prompts (listen-address
+  // Resolved the same way as registryCleanPath above - lets the setup
+  // button below drive scripts/setup.sh directly from wherever this plugin
+  // is actually installed, instead of just telling the user to go find a
+  // terminal. Run with no TTY attached, setup.sh already detects that
+  // itself and skips its own interactive prompts (listen-address
   // customization, agent-skill linking) - this button exists specifically
-  // to cover everything setup.sh does unattended; the skill-link buttons
-  // below cover the one thing it can't do headless.
+  // to cover everything setup.sh does unattended; the skill checkboxes
+  // below cover the one thing it can't do headless, applied as part of
+  // the same click instead of a separate step that's easy to miss.
   readonly property string setupShPath: String(Qt.resolvedUrl("scripts/setup.sh")).substring(7)
   readonly property string skillDirPath: String(Qt.resolvedUrl("skills/modelmanager")).substring(7)
 
@@ -96,21 +97,58 @@ Panel {
   property string setupResult: ""
 
   property bool skillLinkRunning: false
-  // "" (not chosen yet) | "linked" | "skipped" | an error string.
+  property var skillLinkQueue: []
+  property string skillLinkCurrentAgent: ""
+  property var skillLinkDoneList: []
+  // "" (not applied yet) | "skipped" (neither box checked) | a "claude:
+  // linked; codex: linked"-style summary built from skillLinkDoneList.
   property string skillLinkResult: ""
 
-  function runSetup() {
-    if (setupProc.running) return
-    root.setupRunning = true
-    root.setupResult = ""
-    setupProc.command = ["sh", "-c", "exec \"$0\"", root.setupShPath]
-    setupProc.running = true
+  // Live progress while setupProc runs - setupOut/setupErr use
+  // waitForEnd: false specifically so this updates in real time instead of
+  // only appearing once at the very end. Capped to the last 10 lines so a
+  // noisy pip install doesn't grow the panel unbounded.
+  readonly property string setupLiveOutput: {
+    const combined = (setupOut.text + setupErr.text).trim()
+    if (combined === "") return ""
+    const lines = combined.split("\n")
+    return lines.length > 10 ? "...\n" + lines.slice(-10).join("\n") : combined
   }
 
-  function linkSkill(agent) {
-    if (skillLinkProc.running) return
+  // One combined action: if the backend is actually down, run setup.sh
+  // first (which does the venv/token/TLS/systemd work) and only link
+  // skills once it succeeds; if the backend's already up and this was
+  // reopened later with the registry still unconfigured, there's nothing
+  // for setup.sh to do, so just apply whichever skill checkboxes are
+  // checked directly.
+  function startSetupAction() {
+    if (root.backendUnreachable) {
+      if (setupProc.running) return
+      root.setupRunning = true
+      root.setupResult = ""
+      setupProc.command = ["sh", "-c", "exec \"$0\"", root.setupShPath]
+      setupProc.running = true
+    } else {
+      root.applyPendingSkillLinks()
+    }
+  }
+
+  function applyPendingSkillLinks() {
+    root.skillLinkQueue = []
+    if (linkClaudeCheck.checked) root.skillLinkQueue.push("claude")
+    if (linkCodexCheck.checked) root.skillLinkQueue.push("codex")
+    root.skillLinkDoneList = []
+    root.processSkillLinkQueue()
+  }
+
+  function processSkillLinkQueue() {
+    if (root.skillLinkQueue.length === 0) {
+      root.skillLinkResult = root.skillLinkDoneList.length > 0 ? root.skillLinkDoneList.join("; ") : "skipped"
+      return
+    }
+    const agent = root.skillLinkQueue.shift()
     root.skillLinkRunning = true
-    root.skillLinkResult = ""
+    root.skillLinkCurrentAgent = agent
     const dst = Quickshell.env("HOME") + "/." + agent + "/skills/modelmanager"
     skillLinkProc.command = [
       "sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && ln -sf \"$1\" \"$2\"",
@@ -817,10 +855,16 @@ Panel {
 
   Process {
     id: setupProc
-    stdout: StdioCollector { id: setupOut; waitForEnd: true }
+    // waitForEnd: false (unlike every other StdioCollector in this file) -
+    // confirmed directly: true buffers everything and fires dataChanged
+    // exactly once at the very end, same timing as streamFinished; false
+    // fires it per chunk as output actually arrives, which is what lets
+    // the live-output Text below update in real time while this runs
+    // instead of jumping straight from nothing to the final result.
+    stdout: StdioCollector { id: setupOut; waitForEnd: false }
     stderr: StdioCollector {
       id: setupErr
-      waitForEnd: true
+      waitForEnd: false
       onStreamFinished: { if (text.trim() !== "") root.setupResult = text.trim() }
     }
     onExited: (code) => {
@@ -831,6 +875,7 @@ Panel {
         root.setupResult = "ok"
         root.refresh()
         root.checkFreshInstall()
+        root.applyPendingSkillLinks()
       } else if (root.setupResult === "") {
         root.setupResult = "setup.sh failed (exit " + code + ")"
       }
@@ -839,15 +884,25 @@ Panel {
 
   Process {
     id: skillLinkProc
+    // Any stderr here means mkdir/ln itself failed (bad permissions, a
+    // same-named non-symlink already there) - genuinely unexpected, since
+    // skillDirPath always exists (it ships with the plugin) and the
+    // destination is always a path this user owns.
+    property string lastStderr: ""
     stderr: StdioCollector {
       id: skillLinkErr
       waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.skillLinkResult = text.trim() }
+      onStreamFinished: { skillLinkProc.lastStderr = text.trim() }
     }
     onExited: (code) => {
       root.skillLinkRunning = false
-      if (code === 0 && root.skillLinkResult === "") root.skillLinkResult = "linked"
-      else if (code !== 0 && root.skillLinkResult === "") root.skillLinkResult = "link failed (exit " + code + ")"
+      root.skillLinkDoneList = root.skillLinkDoneList.concat([
+        root.skillLinkCurrentAgent + ": " + (code === 0
+          ? "linked"
+          : "failed" + (skillLinkProc.lastStderr !== "" ? " (" + skillLinkProc.lastStderr + ")" : " (exit " + code + ")"))
+      ])
+      skillLinkProc.lastStderr = ""
+      root.processSkillLinkQueue()
     }
   }
 
@@ -1331,21 +1386,20 @@ Panel {
           font.pixelSize: Style.font.caption
         }
 
-        // Shown whenever the backend itself isn't reachable. Independent of
-        // the registry-setup block below (not the same && condition the
-        // whole thing used to be gated on) because clicking "Run setup now"
-        // flips this to false the moment the coordinator comes up, but the
-        // registry stays the untouched clean default until a real model is
-        // added - the skill-link offer below needs to survive that, not
-        // disappear the instant the backend starts.
+        // Shown whenever the backend is down, or the registry is still the
+        // untouched clean default (independent conditions - OR, not AND -
+        // so this survives the backend coming up if nobody's described a
+        // model yet). Reads top to bottom on purpose: status, then what
+        // the button will actually do, then the skill choice to make
+        // *before* clicking it, then the button itself last.
         Column {
-          visible: root.backendUnreachable
+          visible: root.backendUnreachable || root.registryIsDefault
           width: parent.width
-          spacing: Style.space(4)
+          spacing: Style.space(6)
 
           Text {
-            text: "Backend not running."
-            color: Color.urgent
+            text: root.backendUnreachable ? "Backend not running." : "No model configured yet."
+            color: root.backendUnreachable ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
             font.bold: true
             wrapMode: Text.Wrap
             width: parent.width
@@ -1353,23 +1407,58 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
-          Row {
-            visible: root.setupResult !== "ok"
-            spacing: Style.space(8)
-
-            Button {
-              text: root.setupRunning ? "Running setup..." : "Run setup now"
-              enabled: !root.setupRunning
-              bordered: true
-              onClicked: root.runSetup()
-            }
-          }
           Text {
-            visible: root.setupResult !== "ok"
+            visible: root.backendUnreachable && root.setupResult !== "ok"
             text: "Builds the backend, generates a token/TLS cert, and starts it as a"
               + " systemd service (no custom listen port here - run"
               + " ./scripts/setup.sh yourself in a terminal for that)."
             color: root.bar ? root.bar.foreground : Color.foreground
+            wrapMode: Text.Wrap
+            width: parent.width
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Column {
+            visible: root.registryIsDefault && root.skillLinkResult === ""
+            width: parent.width
+            spacing: Style.space(2)
+
+            Text {
+              text: "Also point a coding agent at skills/modelmanager/SKILL.md so it"
+                + " can set up your first model - check which one(s) before clicking"
+                + " below (or leave both unchecked and edit "
+                + root.registryJsonPath + " yourself):"
+              color: root.bar ? root.bar.foreground : Color.foreground
+              wrapMode: Text.Wrap
+              width: parent.width
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Row {
+              spacing: Style.space(12)
+              CheckBox { id: linkClaudeCheck; text: "Claude Code" }
+              CheckBox { id: linkCodexCheck; text: "Codex" }
+            }
+          }
+
+          Row {
+            spacing: Style.space(8)
+
+            Button {
+              text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
+                : (root.backendUnreachable ? "Run setup now" : "Link skill now")
+              enabled: !root.setupRunning && !root.skillLinkRunning
+              bordered: true
+              visible: root.setupResult !== "ok" || (root.registryIsDefault && root.skillLinkResult === "")
+              onClicked: root.startSetupAction()
+            }
+          }
+
+          Text {
+            visible: root.setupRunning && root.setupLiveOutput !== ""
+            text: root.setupLiveOutput
+            color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
             wrapMode: Text.Wrap
             width: parent.width
             font.family: Style.font.family
@@ -1384,8 +1473,19 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
+          Text {
+            visible: root.skillLinkResult !== "" && root.skillLinkResult !== "skipped"
+            text: root.skillLinkResult
+            color: root.skillLinkResult.indexOf("failed") !== -1
+              ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
+            wrapMode: Text.Wrap
+            width: parent.width
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
 
           Text {
+            visible: root.backendUnreachable
             text: "(" + root.lastError + ")"
             color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
             wrapMode: Text.Wrap
@@ -1393,69 +1493,6 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
-        }
-
-        // Shown as long as the registry is still the untouched clean
-        // default - i.e. nobody has described a real model yet - regardless
-        // of whether the backend above is up. Offering to link the skill
-        // asks every time this situation is seen (no persisted dismissal),
-        // same one-time-per-situation spirit as scripts/setup.sh's own
-        // prompt; "Skip" just hides it for this session.
-        Column {
-          visible: root.registryIsDefault && root.skillLinkResult === ""
-          width: parent.width
-          spacing: Style.space(4)
-
-          Text {
-            text: (root.backendUnreachable ? "2. " : "No model configured yet - ")
-              + "point your coding agent at skills/modelmanager/SKILL.md to set"
-              + " one up, or edit " + root.registryJsonPath + " yourself."
-            color: root.bar ? root.bar.foreground : Color.foreground
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Row {
-            spacing: Style.space(8)
-
-            Button {
-              text: root.skillLinkRunning ? "Linking..." : "Link: Claude Code"
-              enabled: !root.skillLinkRunning
-              bordered: true
-              onClicked: root.linkSkill("claude")
-            }
-            Button {
-              text: root.skillLinkRunning ? "Linking..." : "Link: Codex"
-              enabled: !root.skillLinkRunning
-              bordered: true
-              onClicked: root.linkSkill("codex")
-            }
-            Button {
-              text: "Skip"
-              bordered: true
-              onClicked: root.skillLinkResult = "skipped"
-            }
-          }
-        }
-        Text {
-          visible: root.skillLinkResult === "linked"
-          text: "Linked - your agent can see the skill now."
-          color: root.bar ? root.bar.foreground : Color.foreground
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-        Text {
-          visible: root.skillLinkResult !== "" && root.skillLinkResult !== "skipped" && root.skillLinkResult !== "linked"
-          text: root.skillLinkResult
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
         }
 
         Text {
