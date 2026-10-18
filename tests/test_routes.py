@@ -341,6 +341,30 @@ def test_group_stats_best_effort_across_systems(tmp_path, monkeypatch):
     assert "ssh unreachable" in by_system["monolith"]["detail"]
 
 
+def test_all_systems_stats_is_best_effort_across_systems(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+    manager = client.app.state.manager
+    manager.registry.systems["monolith"] = SystemConfig(os="windows", control="ssh", ssh_host="monolith")
+
+    monkeypatch.setattr(routes_module, "build_runner", lambda system: system.ssh_host or "sleek")
+
+    def fake_gpu_stats(runner, timeout=15):
+        if runner == "monolith":
+            raise RuntimeError("ssh unreachable")
+        return [{"index": 0, "name": "fake-gpu", "memory_used_mb": 1, "memory_total_mb": 2, "utilization_pct": 3, "temperature_c": 4}]
+
+    monkeypatch.setattr(routes_module.gpu_stats, "gpu_stats", fake_gpu_stats)
+
+    resp = client.get("/v1/systems/stats")
+
+    assert resp.status_code == 200
+    by_system = {r["system"]: r for r in resp.json()["results"]}
+    assert by_system["sleek"]["ok"] is True
+    assert by_system["sleek"]["gpus"][0]["name"] == "fake-gpu"
+    assert by_system["monolith"]["ok"] is False
+    assert "ssh unreachable" in by_system["monolith"]["detail"]
+
+
 def test_group_stats_unknown_group_returns_404(tmp_path):
     client = make_client(tmp_path)
 

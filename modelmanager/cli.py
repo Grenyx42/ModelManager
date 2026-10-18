@@ -550,10 +550,14 @@ def _print_stats_pretty(body: dict) -> None:
     if "results" not in body:
         _print_gpus_pretty(body.get("gpus", []), c)
         return
-    print(c(body.get("group", "group"), "bold", "cyan"))
+    if "group" in body:
+        print(c(body["group"], "bold", "cyan"))
     for result in body["results"]:
         models = ", ".join(result.get("models", []))
-        print(f"  {c(result['system'], 'bold')}  " + c(f"({models})", "dim"))
+        label = f"  {c(result['system'], 'bold')}"
+        if models:
+            label += "  " + c(f"({models})", "dim")
+        print(label)
         if result.get("ok"):
             _print_gpus_pretty(result.get("gpus") or [], c, indent="    ")
         else:
@@ -562,7 +566,11 @@ def _print_stats_pretty(body: dict) -> None:
 
 def cmd_stats(args) -> int:
     with _client(args) as client:
-        resp = _get_system_or_group(client, args.system, "/stats")
+        # No system/group name -> every (allowed) system in one request
+        # (GET /v1/systems/stats) instead of one call per system - this is
+        # what the bar panel's stats sweep uses, so switching to a remote
+        # peer doesn't pay a fresh TLS handshake per system in sequence.
+        resp = client.get("/v1/systems/stats") if not args.system else _get_system_or_group(client, args.system, "/stats")
         if not args.pretty:
             return _print_response(resp)
         if resp.status_code >= 400:
@@ -687,9 +695,9 @@ def cmd_auth(args) -> int:
 def cmd_grant(args) -> int:
     # Local-only, like cmd_auth: reads/writes grants.json directly, no
     # coordinator round-trip. This is User A's own admin action, run on
-    # their own machine, to associate a token User B generated for their own
-    # coordinator and shared out-of-band with a name and a scoped set of
-    # systems - see modelmanager/grants.py.
+    # their own machine. `add`/`remove` manage the person's identity (name +
+    # token) once; `allow`/`revoke` manage which systems they can reach,
+    # one at a time, however many times - see modelmanager/grants.py.
     if args.grant_action == "list":
         entries = grants.load_grants()
         print(json.dumps([
@@ -701,20 +709,32 @@ def cmd_grant(args) -> int:
         removed = grants.remove_grant(args.name)
         print(json.dumps({"name": args.name, "removed": removed}))
         return 0 if removed else 1
-    systems = [s.strip() for s in args.systems.split(",") if s.strip()]
-    try:
-        registry = load_registry()
-    except (FileNotFoundError, json.JSONDecodeError, ValidationError) as exc:
-        print(json.dumps({"error": f"couldn't load the local registry to validate systems: {exc}"}))
+    if args.grant_action == "add":
+        entry = grants.add_grant(args.name, args.token)
+        print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"], "created_at": entry["created_at"]}))
+        return 0
+    # allow/revoke both need a known grant name, and allow additionally
+    # validates the system actually exists (revoke doesn't need to - taking
+    # away access to a system that was since deleted from the registry is
+    # always fine).
+    if args.grant_action == "allow":
+        try:
+            registry = load_registry()
+        except (FileNotFoundError, json.JSONDecodeError, ValidationError) as exc:
+            print(json.dumps({"error": f"couldn't load the local registry to validate the system: {exc}"}))
+            return 1
+        if args.system not in registry.systems:
+            print(json.dumps({
+                "error": f"unknown system {args.system!r} - known systems: {', '.join(sorted(registry.systems))}"
+            }))
+            return 1
+        entry = grants.allow_system(args.name, args.system)
+    else:
+        entry = grants.revoke_system(args.name, args.system)
+    if entry is None:
+        print(json.dumps({"error": f"unknown grant {args.name!r} - run `modelmanager grant add` first"}))
         return 1
-    unknown = [s for s in systems if s not in registry.systems]
-    if unknown:
-        print(json.dumps({
-            "error": f"unknown system(s): {', '.join(unknown)} - known systems: {', '.join(sorted(registry.systems))}"
-        }))
-        return 1
-    entry = grants.add_grant(args.name, args.token, systems)
-    print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"], "created_at": entry["created_at"]}))
+    print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"]}))
     return 0
 
 
@@ -898,8 +918,10 @@ def main() -> None:
     p_log_path.add_argument("name")
     p_log_path.set_defaults(func=cmd_log_path)
 
-    p_stats = sub.add_parser("stats", help="show GPU/VRAM stats for a system (or every system behind a group's models)")
-    p_stats.add_argument("system")
+    p_stats = sub.add_parser(
+        "stats", help="show GPU/VRAM stats for a system, a group's systems, or (omitted) every system in one call"
+    )
+    p_stats.add_argument("system", nargs="?", default=None)
     p_stats.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
     p_stats.set_defaults(func=cmd_stats)
 
@@ -960,16 +982,25 @@ def main() -> None:
         "grant", help="manage scoped access for other people (reads/writes grants.json directly - no coordinator needed)"
     )
     grant_sub = p_grant.add_subparsers(dest="grant_action", required=True)
-    p_grant_add = grant_sub.add_parser("add", help="associate a token someone shared with you to a name + allowed systems")
+    p_grant_add = grant_sub.add_parser(
+        "add", help="register (or re-register) a token someone shared with you under a name - no system access yet"
+    )
     p_grant_add.add_argument("name", help="a label for this person/credential, e.g. 'bob'")
     p_grant_add.add_argument("token", help="the token they generated locally and shared with you")
-    p_grant_add.add_argument("--systems", required=True, help="comma-separated system names from your registry.json")
     p_grant_add.set_defaults(func=cmd_grant)
     p_grant_list = grant_sub.add_parser("list", help="list grants (never shows tokens)")
     p_grant_list.set_defaults(func=cmd_grant)
-    p_grant_remove = grant_sub.add_parser("remove", help="revoke a grant by name")
+    p_grant_remove = grant_sub.add_parser("remove", help="delete a grant entirely by name (identity, token, and all system access)")
     p_grant_remove.add_argument("name")
     p_grant_remove.set_defaults(func=cmd_grant)
+    p_grant_allow = grant_sub.add_parser("allow", help="give an existing grant access to one more system")
+    p_grant_allow.add_argument("name", help="an existing grant's name (see `grant add`)")
+    p_grant_allow.add_argument("system", help="a system name from your registry.json")
+    p_grant_allow.set_defaults(func=cmd_grant)
+    p_grant_revoke = grant_sub.add_parser("revoke", help="take away an existing grant's access to one system")
+    p_grant_revoke.add_argument("name", help="an existing grant's name (see `grant add`)")
+    p_grant_revoke.add_argument("system")
+    p_grant_revoke.set_defaults(func=cmd_grant)
 
     p_hosts = sub.add_parser(
         "hosts",

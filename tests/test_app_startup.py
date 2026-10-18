@@ -217,7 +217,8 @@ def test_grant_token_is_accepted_and_scoped_to_its_systems(tmp_path, monkeypatch
     from modelmanager import grants
     from modelmanager.coordinator.app import create_app
 
-    grants.add_grant("bob", "bobs-token", ["sys-a"])
+    grants.add_grant("bob", "bobs-token")
+    grants.allow_system("bob", "sys-a")
 
     with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
         allowed = client.get("/v1/systems/sys-a")
@@ -251,28 +252,39 @@ def test_grant_filters_dump_all_endpoints_and_blocks_model_actions_outside_scope
             "model-a": {"candidates": [{"engine": "eng-a", "gpu_group": "gpu-a", "port": 1, "model_path": "/m/a.gguf"}]},
             "model-b": {"candidates": [{"engine": "eng-b", "gpu_group": "gpu-b", "port": 2, "model_path": "/m/b.gguf"}]},
         },
-        "groups": {"g1": ["model-a", "model-b"]},
+        # g1 mixes an allowed and a forbidden model - should be hidden from
+        # bob entirely (see _group_visible); g2 is fully within bob's scope
+        # and should still show up normally.
+        "groups": {"g1": ["model-a", "model-b"], "g2": ["model-a"]},
     }))
 
     from modelmanager import grants
     from modelmanager.coordinator.app import create_app
 
-    grants.add_grant("bob", "bobs-token", ["sys-a"])
+    grants.add_grant("bob", "bobs-token")
+    grants.allow_system("bob", "sys-a")
 
     with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
         config = client.get("/v1/config").json()
         models = client.get("/v1/models").json()
         groups = client.get("/v1/groups").json()
+        mixed_group_get = client.get("/v1/groups/g1")
+        allowed_group_get = client.get("/v1/groups/g2")
         allowed_get = client.get("/v1/models/model-a")
         forbidden_get = client.get("/v1/models/model-b")
         forbidden_ensure = client.post("/v1/models/model-b/ensure")
         forbidden_logs = client.get("/v1/models/model-b/logs")
         doctor_attempt = client.get("/v1/doctor")
+        all_stats = client.get("/v1/systems/stats").json()
 
     assert set(config["systems"]) == {"sys-a"}
     assert set(config["models"]) == {"model-a"}
     assert [m["name"] for m in models] == ["model-a"]
-    assert groups["g1"] == ["model-a"]
+    assert "g1" not in groups  # mixed membership - hidden entirely, not partially filtered
+    assert groups["g2"] == ["model-a"]
+    assert mixed_group_get.status_code == 404
+    assert allowed_group_get.status_code == 200
+    assert {r["system"] for r in all_stats["results"]} == {"sys-a"}
     assert allowed_get.status_code == 200
     assert forbidden_get.status_code == 403
     assert forbidden_ensure.status_code == 403
@@ -287,7 +299,7 @@ def test_unmatched_token_is_still_rejected_even_with_grants_configured(tmp_path,
     from modelmanager import grants
     from modelmanager.coordinator.app import create_app
 
-    grants.add_grant("bob", "bobs-token", [])
+    grants.add_grant("bob", "bobs-token")
 
     with TestClient(create_app(), headers={"Authorization": "Bearer someone-elses-token"}) as client:
         resp = client.get("/v1/help")

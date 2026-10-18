@@ -37,15 +37,22 @@ def save_grants(grants: list[dict], path: Path | None = None) -> Path:
     return path
 
 
-def add_grant(name: str, token: str, allowed_systems: list[str], path: Path | None = None) -> dict:
-    """Overwrites any existing grant with the same name (re-running `grant add`
-    for the same person replaces their token/systems rather than duplicating)."""
-    grants = [g for g in load_grants(path) if g["name"] != name]
+def add_grant(name: str, token: str, path: Path | None = None) -> dict:
+    """Registers (or re-registers) a person's token under `name`, with no
+    system access yet - `allow_system`/`revoke_system` below are how access
+    gets granted or taken away afterward, one system at a time, without
+    ever having to retype the token. Re-running this for an existing name
+    (e.g. they rotated their token) replaces token_hash but preserves
+    whatever allowed_systems/created_at were already there - rotating a
+    token shouldn't silently wipe someone's existing access."""
+    grants = load_grants(path)
+    existing = next((g for g in grants if g["name"] == name), None)
+    grants = [g for g in grants if g["name"] != name]
     entry = {
         "name": name,
         "token_hash": hash_token(token),
-        "allowed_systems": list(allowed_systems),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "allowed_systems": list(existing["allowed_systems"]) if existing else [],
+        "created_at": existing["created_at"] if existing else datetime.now(timezone.utc).isoformat(),
     }
     grants.append(entry)
     save_grants(grants, path)
@@ -59,6 +66,34 @@ def remove_grant(name: str, path: Path | None = None) -> bool:
         return False
     save_grants(remaining, path)
     return True
+
+
+def allow_system(name: str, system: str, path: Path | None = None) -> dict | None:
+    """Adds one system to an existing grant's allowed_systems (idempotent -
+    already-allowed is a no-op, not an error). None if `name` isn't a known
+    grant (register it with `grant add` first)."""
+    grants = load_grants(path)
+    for entry in grants:
+        if entry["name"] == name:
+            if system not in entry["allowed_systems"]:
+                entry["allowed_systems"].append(system)
+            save_grants(grants, path)
+            return entry
+    return None
+
+
+def revoke_system(name: str, system: str, path: Path | None = None) -> dict | None:
+    """Removes one system from an existing grant's allowed_systems
+    (idempotent - already-absent is a no-op, not an error). None if `name`
+    isn't a known grant."""
+    grants = load_grants(path)
+    for entry in grants:
+        if entry["name"] == name:
+            if system in entry["allowed_systems"]:
+                entry["allowed_systems"].remove(system)
+            save_grants(grants, path)
+            return entry
+    return None
 
 
 def find_grant_by_token(token: str, path: Path | None = None) -> dict | None:

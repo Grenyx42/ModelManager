@@ -51,9 +51,17 @@ Panel {
   // through mmCommand (not mmLocalHostsCommand) so it respects this.
   property string activeHost: ""
 
+  // Shared by mmCommand below and launchTerminalForLogPath's "no discrete
+  // log file" fallback, which has to invoke mmBin directly as watch's own
+  // command (not through mmCommand's sh -c wrapper - nesting that inside
+  // watch's own re-parsing of its argv into a second shell command would
+  // be fragile to get quoting right for no benefit here).
+  function mmPeerArgs() {
+    return root.activeHost !== "" ? ["--peer", root.activeHost] : []
+  }
+
   function mmCommand(args) {
-    var full = root.activeHost !== "" ? ["--peer", root.activeHost].concat(args) : args
-    return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(full)
+    return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(root.mmPeerArgs()).concat(args)
   }
 
   // For `modelmanager hosts ...` itself only - managing which coordinators
@@ -89,6 +97,24 @@ Panel {
   // while it's showing) - true from the moment a new host is probed until
   // it's either trusted, cancelled, or fails.
   readonly property bool hostTrustPromptActive: root.hostProbeRunning || root.hostProbeFingerprint !== "" || root.hostProbeError !== ""
+
+  // What's still in flight *for the currently active host* right now -
+  // each name only appears while its own request hasn't landed yet, so
+  // this naturally shrinks as responses arrive instead of being an
+  // all-or-nothing spinner. Harmless to show during ordinary local polling
+  // too (just flickers briefly, those calls are fast), but it's the point
+  // specifically right after switching to a slower/remote host: without
+  // this, an empty Models list for several seconds looks indistinguishable
+  // from something being broken.
+  readonly property var hostLoadingParts: {
+    var parts = []
+    if (listProc.running && listProc.pendingHost === root.activeHost) parts.push("models")
+    if (systemsProc.running && systemsProc.pendingHost === root.activeHost) parts.push("systems")
+    if (gpuGroupsProc.running && gpuGroupsProc.pendingHost === root.activeHost) parts.push("config")
+    if (groupsProc.running && groupsProc.pendingHost === root.activeHost) parts.push("groups")
+    if (statsSweepProc.running && statsSweepProc.pendingHost === root.activeHost) parts.push("stats")
+    return parts
+  }
 
   function loadKnownHosts() {
     if (!hostsListProc.running) hostsListProc.running = true
@@ -136,8 +162,19 @@ Panel {
     root.lastError = ""
     root.actionError = ""
     root.systemStats = ({})
-    root.statsQueue = []
-    root.statsSweepActive = false
+    // Any of these still in flight belong to the host being left - their
+    // pendingHost guards (see each Process's own comment) already stop a
+    // late result from clobbering state for whatever's active now, but
+    // killing them outright here means switching away from a slow or
+    // unreachable host doesn't still have to sit out its full connection
+    // timeout before the new host's data shows up. Setting running:false
+    // on an already-running Process kills it immediately (same restart
+    // idiom used elsewhere in this file, e.g. terminalProc).
+    if (listProc.running) listProc.running = false
+    if (systemsProc.running) systemsProc.running = false
+    if (gpuGroupsProc.running) gpuGroupsProc.running = false
+    if (groupsProc.running) groupsProc.running = false
+    if (statsSweepProc.running) statsSweepProc.running = false
     root.refresh()
     root.startStatsSweep()
   }
@@ -345,8 +382,6 @@ Panel {
   // reached that system yet. Always reassigned wholesale (never mutated in
   // place) so the Repeater below actually re-evaluates its bindings.
   property var systemStats: ({})
-  property var statsQueue: []
-  property bool statsSweepActive: false
 
   // Default sweep cadence is slow (30s) since nothing's changing; a
   // start/stop action bumps it to 1s for fastStatsWindowMs so the GPU bars
@@ -407,11 +442,20 @@ Panel {
   // entry can show what's warm and using its VRAM right now.
   readonly property var activeModelsBySystem: root.activeModelNamesBySystem(root.models, root.gpuGroupSystem)
 
+  // Each Process below stamps its own pendingHost with root.activeHost at
+  // the moment it's launched, and every handler checks that against
+  // root.activeHost *when the result actually lands* before touching any
+  // state - a request kicked off for one host that's still in flight when
+  // the user switches to another (its "not already running" guard just
+  // below means refresh() can't simply fire a fresh one on top of it)
+  // would otherwise land late and clobber lastError/models/stats with a
+  // now-irrelevant host's result, exactly as if that stale response were
+  // about whatever's active *now*.
   function refresh() {
-    if (!listProc.running) listProc.running = true
-    if (!systemsProc.running) systemsProc.running = true
-    if (!gpuGroupsProc.running) gpuGroupsProc.running = true
-    if (!groupsProc.running) groupsProc.running = true
+    if (!listProc.running) { listProc.pendingHost = root.activeHost; listProc.running = true }
+    if (!systemsProc.running) { systemsProc.pendingHost = root.activeHost; systemsProc.running = true }
+    if (!gpuGroupsProc.running) { gpuGroupsProc.pendingHost = root.activeHost; gpuGroupsProc.running = true }
+    if (!groupsProc.running) { groupsProc.pendingHost = root.activeHost; groupsProc.running = true }
     root.loadKnownHosts()
   }
 
@@ -501,6 +545,7 @@ Panel {
     if (ensureProc.running) return
     root.actionError = ""
     ensureProc.pendingName = name
+    ensureProc.pendingHost = root.activeHost
     ensureProc.command = root.mmCommand(["ensure", name])
     ensureProc.running = true
   }
@@ -509,6 +554,7 @@ Panel {
     if (stopProc.running) return
     root.actionError = ""
     stopProc.pendingName = name
+    stopProc.pendingHost = root.activeHost
     stopProc.command = root.mmCommand(["stop", name])
     stopProc.running = true
   }
@@ -609,6 +655,7 @@ Panel {
     if (groupEnsureProc.running) return
     root.actionError = ""
     groupEnsureProc.pendingName = name
+    groupEnsureProc.pendingHost = root.activeHost
     groupEnsureProc.command = root.mmCommand(["group-ensure", name])
     groupEnsureProc.running = true
   }
@@ -617,6 +664,7 @@ Panel {
     if (groupStopProc.running) return
     root.actionError = ""
     groupStopProc.pendingName = name
+    groupStopProc.pendingHost = root.activeHost
     groupStopProc.command = root.mmCommand(["group-stop", name])
     groupStopProc.running = true
   }
@@ -665,6 +713,7 @@ Panel {
   function openLogTerminal(name) {
     if (logPathProc.running) return
     pendingTerminalModel = name
+    logPathProc.pendingHost = root.activeHost
     logPathProc.command = root.mmCommand(["log-path", name])
     logPathProc.running = true
   }
@@ -672,36 +721,50 @@ Panel {
   function launchTerminalForLogPath(rawText) {
     var name = root.pendingTerminalModel
     var followCmd = null
-    try {
-      var info = JSON.parse(rawText)
-      var logPaths = info.paths || []
-      // Usually one file, but a remote Windows launch keeps stdout/stderr as
-      // two separate files (see agent.ps1) - and the process being launched
-      // almost always logs to stderr, so tailing only the first one here
-      // would look like the terminal just isn't showing anything.
-      if (logPaths.length > 0) {
-        if (info.control === "ssh" && info.os === "windows") {
-          var psPaths = logPaths.map(function(p) {
-            return "'" + p.replace(/'/g, "''") + "'"
-          }).join(",")
-          followCmd = [
-            "ssh", info.ssh_host, "powershell", "-NoProfile", "-Command",
-            "Get-Content -Path " + psPaths + " -Wait -Tail 100"
-          ]
-        } else if (info.control === "ssh") {
-          followCmd = ["ssh", info.ssh_host, "tail", "-f", "-n", "100"].concat(logPaths)
-        } else {
-          followCmd = ["tail", "-f", "-n", "100"].concat(logPaths)
+    // Live-tailing the raw file (a local `tail`, or `ssh <ssh_host> tail`)
+    // only makes sense when this panel and the coordinator are the same
+    // machine: a remote peer's "local" paths live on *their* filesystem,
+    // not this one, and its "ssh" paths would need this machine to have
+    // its own independent SSH access to that system - neither can be
+    // assumed for an arbitrary granted peer (see root.activeHost). Only
+    // attempt direct tailing for the local coordinator; a remote target
+    // always falls through to the REST-polling fallback below instead,
+    // which only ever needs the same bearer token already in use.
+    if (root.activeHost === "") {
+      try {
+        var info = JSON.parse(rawText)
+        var logPaths = info.paths || []
+        // Usually one file, but a remote Windows launch keeps stdout/stderr
+        // as two separate files (see agent.ps1) - and the process being
+        // launched almost always logs to stderr, so tailing only the first
+        // one here would look like the terminal just isn't showing anything.
+        if (logPaths.length > 0) {
+          if (info.control === "ssh" && info.os === "windows") {
+            var psPaths = logPaths.map(function(p) {
+              return "'" + p.replace(/'/g, "''") + "'"
+            }).join(",")
+            followCmd = [
+              "ssh", info.ssh_host, "powershell", "-NoProfile", "-Command",
+              "Get-Content -Path " + psPaths + " -Wait -Tail 100"
+            ]
+          } else if (info.control === "ssh") {
+            followCmd = ["ssh", info.ssh_host, "tail", "-f", "-n", "100"].concat(logPaths)
+          } else {
+            followCmd = ["tail", "-f", "-n", "100"].concat(logPaths)
+          }
         }
+      } catch (e) {
+        // fall through to the polling fallback below
       }
-    } catch (e) {
-      // fall through to the polling fallback below
     }
     if (!followCmd) {
       // No discrete log file to tail (e.g. an externally-managed ollama
-      // service, only in journalctl) - fall back to polling the same
-      // CLI/REST path the popup itself uses.
-      followCmd = ["watch", "-n", "2", root.mmBin, "logs", name, "--lines", "100"]
+      // service, only in journalctl), or a remote peer (see above) -
+      // either way, fall back to polling the same CLI/REST path the popup
+      // itself uses - mmPeerArgs() (not mmCommand's sh-wrapped form, which
+      // would nest awkwardly inside watch's own command re-parsing) keeps
+      // this pointed at whatever coordinator is actually active.
+      followCmd = ["watch", "-n", "2", root.mmBin].concat(root.mmPeerArgs()).concat(["logs", name, "--lines", "100"])
     }
     // xdg-terminal-exec's two-token "--title <value>" form silently mis-parses
     // (swallows the value as if it were the command), even with no spaces in
@@ -711,24 +774,19 @@ Panel {
     terminalProc.running = true
   }
 
-  // Sweeps every system's stats one at a time (statsSweepProc only runs one
-  // command at a time, and a home-lab's system count is small enough that
-  // sequential polling is simpler than juggling a Process per system).
+  // One call for every system's stats (GET /v1/systems/stats via
+  // `modelmanager stats` with no system name) instead of one call per
+  // system - each separate CLI invocation pays its own fresh TLS handshake
+  // with no connection reuse across them, negligible on localhost but
+  // multiplied badly over a slower/remote --peer link when done
+  // sequentially (confirmed directly: ~1.3s for 3 systems one at a time
+  // locally, where a real cross-machine link adds seconds per call instead
+  // of milliseconds). Guards the same way as every other peer-aware
+  // Process: skip if one's already in flight for this exact host.
   function startStatsSweep() {
-    if (root.statsSweepActive) return
-    root.statsQueue = root.systemNames.slice()
-    root.statsSweepActive = true
-    root.pollNextSystemStats()
-  }
-
-  function pollNextSystemStats() {
-    if (root.statsQueue.length === 0) {
-      root.statsSweepActive = false
-      return
-    }
-    var sys = root.statsQueue.shift()
-    statsSweepProc.pendingSystem = sys
-    statsSweepProc.command = root.mmCommand(["stats", sys])
+    if (statsSweepProc.running && statsSweepProc.pendingHost === root.activeHost) return
+    statsSweepProc.pendingHost = root.activeHost
+    statsSweepProc.command = root.mmCommand(["stats"])
     statsSweepProc.running = true
   }
 
@@ -742,32 +800,24 @@ Panel {
     root.startStatsSweep()
   }
 
-  function parseSystemStats(system, text) {
-    // Empty stdout means the CLI wrote to stderr instead - let the stderr
-    // handler report that, rather than clobbering it with a blank entry.
+  function parseAllSystemStats(text) {
     if (text.trim() === "") return
-    var entry = { gpus: null, error: "" }
     try {
       var data = JSON.parse(text)
-      if (data.gpus) {
-        entry.gpus = data.gpus
-      } else {
-        entry.error = data.error || text
+      // cli.py's clean {"error": "..."} for an unreachable coordinator -
+      // listProc/parseModels already surfaces this as the headline error;
+      // nothing per-system to report here, so just leave stats as-is.
+      if (data && typeof data === "object" && data.error) return
+      var copy = {}
+      var results = (data && data.results) || []
+      for (var i = 0; i < results.length; i++) {
+        var r = results[i]
+        copy[r.system] = { gpus: r.ok ? r.gpus : null, error: r.ok ? "" : (r.detail || "unknown error") }
       }
+      root.systemStats = copy
     } catch (e) {
-      entry.error = text
+      // malformed response - leave systemStats as-is, try again next sweep
     }
-    var copy = {}
-    for (var key in root.systemStats) copy[key] = root.systemStats[key]
-    copy[system] = entry
-    root.systemStats = copy
-  }
-
-  function setSystemStatsError(system, text) {
-    var copy = {}
-    for (var key in root.systemStats) copy[key] = root.systemStats[key]
-    copy[system] = { gpus: null, error: text }
-    root.systemStats = copy
   }
 
   function vramPct(gpu) {
@@ -986,16 +1036,23 @@ Panel {
 
   Process {
     id: listProc
+    // See refresh()'s own comment: pendingHost is stamped with
+    // root.activeHost at launch, and every handler below checks it's still
+    // current before touching any state - a request that was in flight for
+    // a previous host (refresh() couldn't start a fresh one on top of it)
+    // must not clobber state for whatever's active by the time it finally
+    // lands.
+    property string pendingHost: ""
     command: root.mmCommand(["list"])
     stdout: StdioCollector {
       id: listOut
       waitForEnd: true
-      onStreamFinished: root.parseModels(text)
+      onStreamFinished: { if (listProc.pendingHost === root.activeHost) root.parseModels(text) }
     }
     stderr: StdioCollector {
       id: listErr
       waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.lastError = text.trim() }
+      onStreamFinished: { if (listProc.pendingHost === root.activeHost && text.trim() !== "") root.lastError = text.trim() }
     }
     // A missing/unreadable mmBin (venv never set up - see scripts/setup.sh)
     // now reaches here as a normal nonzero exit via mmCommand()'s sh
@@ -1006,6 +1063,7 @@ Panel {
     // without this, the panel would silently sit empty forever with no
     // indication why.
     onExited: (code) => {
+      if (listProc.pendingHost !== root.activeHost) return
       if (code === 126 || code === 127 || (code !== 0 && root.lastError === "")) {
         root.lastError = "can't run " + root.mmBin + " - run this repo's scripts/setup.sh, or set MODELMANAGER_BIN if installed elsewhere"
         root.checkFreshInstall()
@@ -1096,34 +1154,38 @@ Panel {
 
   Process {
     id: systemsProc
+    property string pendingHost: ""
     command: root.mmCommand(["systems"])
     stdout: StdioCollector {
       id: systemsOut
       waitForEnd: true
-      onStreamFinished: root.parseSystems(text)
+      onStreamFinished: { if (systemsProc.pendingHost === root.activeHost) root.parseSystems(text) }
     }
   }
 
   Process {
     id: gpuGroupsProc
+    property string pendingHost: ""
     command: root.mmCommand(["config"])
     stdout: StdioCollector {
       id: gpuGroupsOut
       waitForEnd: true
-      onStreamFinished: root.parseGpuGroupSystems(text)
+      onStreamFinished: { if (gpuGroupsProc.pendingHost === root.activeHost) root.parseGpuGroupSystems(text) }
     }
   }
 
   Process {
     id: ensureProc
     property string pendingName: ""
+    property string pendingHost: ""
     command: []
     stdout: StdioCollector {
       id: ensureOut
       waitForEnd: true
-      onStreamFinished: root.parseActionResult("ensure", ensureProc.pendingName, text)
+      onStreamFinished: { if (ensureProc.pendingHost === root.activeHost) root.parseActionResult("ensure", ensureProc.pendingName, text) }
     }
     onExited: (code) => {
+      if (ensureProc.pendingHost !== root.activeHost) return
       if (code !== 0 && root.actionError === "") {
         root.actionError = "ensure " + ensureProc.pendingName + " failed (exit " + code + ")"
       }
@@ -1135,13 +1197,15 @@ Panel {
   Process {
     id: stopProc
     property string pendingName: ""
+    property string pendingHost: ""
     command: []
     stdout: StdioCollector {
       id: stopOut
       waitForEnd: true
-      onStreamFinished: root.parseActionResult("stop", stopProc.pendingName, text)
+      onStreamFinished: { if (stopProc.pendingHost === root.activeHost) root.parseActionResult("stop", stopProc.pendingName, text) }
     }
     onExited: (code) => {
+      if (stopProc.pendingHost !== root.activeHost) return
       if (code !== 0 && root.actionError === "") {
         root.actionError = "stop " + stopProc.pendingName + " failed (exit " + code + ")"
       }
@@ -1152,24 +1216,27 @@ Panel {
 
   Process {
     id: groupsProc
+    property string pendingHost: ""
     command: root.mmCommand(["groups"])
     stdout: StdioCollector {
       id: groupsOut
       waitForEnd: true
-      onStreamFinished: root.parseGroups(text)
+      onStreamFinished: { if (groupsProc.pendingHost === root.activeHost) root.parseGroups(text) }
     }
   }
 
   Process {
     id: groupEnsureProc
     property string pendingName: ""
+    property string pendingHost: ""
     command: []
     stdout: StdioCollector {
       id: groupEnsureOut
       waitForEnd: true
-      onStreamFinished: root.parseGroupActionResult("group-ensure", groupEnsureProc.pendingName, text)
+      onStreamFinished: { if (groupEnsureProc.pendingHost === root.activeHost) root.parseGroupActionResult("group-ensure", groupEnsureProc.pendingName, text) }
     }
     onExited: (code) => {
+      if (groupEnsureProc.pendingHost !== root.activeHost) return
       if (code !== 0 && root.actionError === "") {
         root.actionError = "group-ensure " + groupEnsureProc.pendingName + " failed (exit " + code + ")"
       }
@@ -1181,13 +1248,15 @@ Panel {
   Process {
     id: groupStopProc
     property string pendingName: ""
+    property string pendingHost: ""
     command: []
     stdout: StdioCollector {
       id: groupStopOut
       waitForEnd: true
-      onStreamFinished: root.parseGroupActionResult("group-stop", groupStopProc.pendingName, text)
+      onStreamFinished: { if (groupStopProc.pendingHost === root.activeHost) root.parseGroupActionResult("group-stop", groupStopProc.pendingName, text) }
     }
     onExited: (code) => {
+      if (groupStopProc.pendingHost !== root.activeHost) return
       if (code !== 0 && root.actionError === "") {
         root.actionError = "group-stop " + groupStopProc.pendingName + " failed (exit " + code + ")"
       }
@@ -1198,29 +1267,28 @@ Panel {
 
   Process {
     id: statsSweepProc
-    property string pendingSystem: ""
+    property string pendingHost: ""
     command: []
     stdout: StdioCollector {
       id: statsSweepOut
       waitForEnd: true
-      onStreamFinished: root.parseSystemStats(statsSweepProc.pendingSystem, text)
+      onStreamFinished: { if (statsSweepProc.pendingHost === root.activeHost) root.parseAllSystemStats(text) }
     }
-    stderr: StdioCollector {
-      id: statsSweepErr
-      waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.setSystemStatsError(statsSweepProc.pendingSystem, text.trim()) }
-    }
-    onExited: root.pollNextSystemStats()
   }
 
   Process {
     id: logPathProc
+    property string pendingHost: ""
     command: []
-    stdout: StdioCollector { id: logPathOut; waitForEnd: true; onStreamFinished: root.launchTerminalForLogPath(text) }
+    stdout: StdioCollector {
+      id: logPathOut
+      waitForEnd: true
+      onStreamFinished: { if (logPathProc.pendingHost === root.activeHost) root.launchTerminalForLogPath(text) }
+    }
     stderr: StdioCollector {
       id: logPathErr
       waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.launchTerminalForLogPath("") }
+      onStreamFinished: { if (logPathProc.pendingHost === root.activeHost && text.trim() !== "") root.launchTerminalForLogPath("") }
     }
   }
 
@@ -1420,13 +1488,42 @@ Panel {
         }
       }
 
+      // Only ever visible right after switching to a host whose requests
+      // haven't all landed yet - zero height (not just invisible) when
+      // nothing's loading, so it doesn't leave a permanent gap during the
+      // common case where everything answers in well under a second.
+      // height references hostLoadingText's implicitHeight from the
+      // *outside* rather than a Text binding its own height to its own
+      // implicitHeight conditionally - the latter is a real binding loop
+      // (confirmed directly via Quickshell's own "Binding loop detected
+      // for property height" warning).
+      Item {
+        id: hostLoadingRow
+        anchors.top: hostRow.bottom
+        anchors.topMargin: Style.space(4)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        visible: root.hostLoadingParts.length > 0
+        height: visible ? hostLoadingText.implicitHeight : 0
+
+        Text {
+          id: hostLoadingText
+          anchors.left: parent.left
+          anchors.right: parent.right
+          text: "Loading " + root.hostLoadingParts.join(", ") + "..."
+          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       // Pinned above the model list (not inside it) so the Models header/
       // filter stays reachable no matter how far that list is scrolled -
       // otherwise scrolling down hides the one field you'd want to clear or
       // change the filter from.
       Item {
         id: modelsHeaderRow
-        anchors.top: hostRow.bottom
+        anchors.top: hostLoadingRow.bottom
         anchors.topMargin: Style.space(8)
         anchors.left: parent.left
         anchors.right: parent.right

@@ -117,31 +117,48 @@ every caller using it loses access, there's no narrower grain for it. For
 sharing specific systems with someone else (a friend on your tailnet, another
 box you don't fully trust with the whole fleet), `modelmanager grant`
 associates a *different* token - one that person generated for their own
-coordinator, not yours - with a name and a list of system names from your
-`registry.json`:
+coordinator, not yours - with a name, and then separately grants or revokes
+access to individual systems from your `registry.json` under that name, as
+many times as you like, without ever retyping the token:
 
 ```bash
-modelmanager grant add bob <the-token-bob-shared-with-you> --systems systemB
-modelmanager grant list      # name/allowed_systems/created_at - never the token
-modelmanager grant remove bob
+modelmanager grant add bob <the-token-bob-shared-with-you>   # no system access yet
+modelmanager grant allow bob systemB
+modelmanager grant allow bob systemC
+modelmanager grant revoke bob systemB     # bob keeps systemC
+modelmanager grant list                   # name/allowed_systems/created_at - never the token
+modelmanager grant remove bob             # deletes the identity entirely
 ```
 
 This is local-only (reads/writes `~/.config/modelmanager/grants.json`
 directly, like `auth show`/`rotate`) - no coordinator restart needed, same as
-rotating the owner token. Once granted, a request bearing that token can read
-and operate (`ensure`/`stop`/`verify`/`logs`/group actions) on anything tied
-to an allowed system, but can never write registry config, and never sees
-`doctor`, `/v1/config/validate`, or the access/lifecycle logs - those stay
-owner-only regardless of `allowed_systems`. Access is per-*system*, not
-per-model: if a model has candidates split across more than one system, a
-grant covering any one of them can reach the whole model (see
-`Manager.model_systems` for why) - keep candidates for a shared model on one
-system if you need tighter isolation than that.
+rotating the owner token. Re-running `grant add` for a name that already
+exists rotates its token but leaves `allowed_systems` untouched - handy when
+bob rotates his own token without losing whatever you'd already granted him.
+Once allowed a system, a request bearing that token can read and operate
+(`ensure`/`stop`/`verify`/`logs`/group actions) on anything tied to it, but
+can never write registry config, and never sees `doctor`,
+`/v1/config/validate`, or the access/lifecycle logs - those stay owner-only
+regardless of `allowed_systems`. Access is per-*system*, not per-model: if a
+model has candidates split across more than one system, a grant covering any
+one of them can reach the whole model (see `Manager.model_systems` for why) -
+keep candidates for a shared model on one system if you need tighter
+isolation than that. A `registry.json` **group** only shows up for a grant
+at all (`GET /v1/groups`, a single group by name, or the `groups` section of
+`GET /v1/config`) if *every* member model is within its allowed systems - a
+group mixing permitted and non-permitted models is hidden outright rather
+than shown with the non-permitted members quietly dropped, since a partial
+view would itself leak that other models exist and share a group with ones
+the grant can see. Group *actions* (`group-ensure`/`group-stop`/etc.) aren't
+affected by this - those still operate best-effort per member, gated by each
+member model's own system check, same as any other per-member failure.
 
 `grant remove` is this project's one deliberate exception to "there is no
 delete endpoint, edit the JSON by hand" (see CONTRIBUTING.md) - revocability
 is a real security requirement for a shared credential in a way it isn't for
-registry resources.
+registry resources. `grant allow`/`revoke` aren't deletes in that sense -
+they mutate an existing grant's `allowed_systems` list in place, same as any
+other field update.
 
 ## Using `modelmanager` from another machine
 

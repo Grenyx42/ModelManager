@@ -61,6 +61,19 @@ def _allowed_models(request: Request, manager: Manager, allowed: set[str] | None
     return {name for name in manager.registry.models if manager.model_systems(name) & allowed}
 
 
+def _group_visible(manager: Manager, members: list[str], allowed: set[str]) -> bool:
+    """A group is visible to a scoped grant only if *every* member model is
+    within its allowed systems - showing a group with some members filtered
+    out would otherwise reveal that other, non-permitted models exist and
+    are grouped with ones the grant can see, which is itself information
+    the grant has no business learning. This only governs visibility
+    (GET /v1/groups, /v1/groups/{name}, /v1/config) - group *actions*
+    (ensure_group etc.) still operate best-effort per in-scope member, same
+    as any other per-member failure, since those are gated by each member
+    model's own scope check regardless of what the group listing shows."""
+    return all(manager.model_systems(m) & allowed for m in members)
+
+
 @router.get("/v1/help")
 def help_doc():
     return build_help()
@@ -94,10 +107,7 @@ def get_config(request: Request):
     data["engines"] = {n: v for n, v in data["engines"].items() if v["system"] in allowed}
     data["gpu_groups"] = {n: v for n, v in data["gpu_groups"].items() if v["system"] in allowed}
     data["models"] = {n: v for n, v in data["models"].items() if manager.model_systems(n) & allowed}
-    data["groups"] = {
-        n: [m for m in members if manager.model_systems(m) & allowed] for n, members in data["groups"].items()
-    }
-    data["groups"] = {n: m for n, m in data["groups"].items() if m}
+    data["groups"] = {n: m for n, m in data["groups"].items() if _group_visible(manager, m, allowed)}
     return data
 
 
@@ -220,6 +230,34 @@ def list_systems(request: Request):
     return {name: sys.model_dump() for name, sys in registry.systems.items() if allowed is None or name in allowed}
 
 
+@router.get("/v1/systems/stats")
+def all_systems_stats(request: Request):
+    """Every (allowed) system's GPU stats in one response, instead of one
+    request per system - each separate CLI invocation pays its own fresh
+    TLS handshake (no connection reuse across them), which is negligible on
+    localhost but adds up fast over a slower/remote link (see the bar
+    panel's stats sweep, and `modelmanager stats` with no system name) -
+    this collapses what used to be N sequential round trips into one.
+    Must be registered before GET /v1/systems/{name} - otherwise "stats"
+    would be swallowed as that route's {name} path param."""
+    manager = _manager(request)
+    registry = manager.registry
+    allowed = _allowed_systems(request, registry)
+    runner_cache = request.app.state.system_runners
+    results = []
+    for system_name in registry.systems:
+        if allowed is not None and system_name not in allowed:
+            continue
+        if system_name not in runner_cache:
+            runner_cache[system_name] = build_runner(registry.systems[system_name])
+        try:
+            gpus = gpu_stats.gpu_stats(runner_cache[system_name])
+            results.append({"system": system_name, "ok": True, "gpus": gpus, "detail": None})
+        except (RuntimeError, ModelManagerError) as exc:
+            results.append({"system": system_name, "ok": False, "gpus": None, "detail": str(exc)})
+    return {"results": results}
+
+
 @router.get("/v1/systems/{name}")
 def get_system(name: str, request: Request):
     registry = _manager(request).registry
@@ -286,8 +324,7 @@ def list_groups(request: Request):
     allowed = _allowed_systems(request, manager.registry)
     if allowed is None:
         return groups
-    filtered = {name: [m for m in members if manager.model_systems(m) & allowed] for name, members in groups.items()}
-    return {name: members for name, members in filtered.items() if members}
+    return {name: members for name, members in groups.items() if _group_visible(manager, members, allowed)}
 
 
 @router.get("/v1/groups/{name}")
@@ -298,8 +335,11 @@ def get_group(name: str, request: Request):
         raise NotFoundError(f"unknown group {name!r}")
     members = registry.groups[name]
     allowed = _allowed_systems(request, registry)
-    if allowed is not None:
-        members = [m for m in members if manager.model_systems(m) & allowed]
+    # Same all-or-nothing visibility rule as list_groups/get_config - a
+    # grant that can't see this group in a listing shouldn't be able to
+    # fetch it directly by (guessed or otherwise known) name either.
+    if allowed is not None and not _group_visible(manager, members, allowed):
+        raise NotFoundError(f"unknown group {name!r}")
     return {"name": name, "models": members}
 
 
