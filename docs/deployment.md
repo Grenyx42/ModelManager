@@ -110,10 +110,38 @@ A few things worth knowing:
   API" gap, but it's not a substitute for a trusted network - keep the
   coordinator off the open internet regardless.
 
-**Planned:** today it's one token with full access to everything. Scoped,
-per-token access to specific models is on the roadmap - mainly so a model
-can be shared with friends on your tailnet without handing them the keys to
-your whole fleet.
+## Sharing access with another person
+
+The owner token (above) has full access to everything - rotate/revoke it and
+every caller using it loses access, there's no narrower grain for it. For
+sharing specific systems with someone else (a friend on your tailnet, another
+box you don't fully trust with the whole fleet), `modelmanager grant`
+associates a *different* token - one that person generated for their own
+coordinator, not yours - with a name and a list of system names from your
+`registry.json`:
+
+```bash
+modelmanager grant add bob <the-token-bob-shared-with-you> --systems systemB
+modelmanager grant list      # name/allowed_systems/created_at - never the token
+modelmanager grant remove bob
+```
+
+This is local-only (reads/writes `~/.config/modelmanager/grants.json`
+directly, like `auth show`/`rotate`) - no coordinator restart needed, same as
+rotating the owner token. Once granted, a request bearing that token can read
+and operate (`ensure`/`stop`/`verify`/`logs`/group actions) on anything tied
+to an allowed system, but can never write registry config, and never sees
+`doctor`, `/v1/config/validate`, or the access/lifecycle logs - those stay
+owner-only regardless of `allowed_systems`. Access is per-*system*, not
+per-model: if a model has candidates split across more than one system, a
+grant covering any one of them can reach the whole model (see
+`Manager.model_systems` for why) - keep candidates for a shared model on one
+system if you need tighter isolation than that.
+
+`grant remove` is this project's one deliberate exception to "there is no
+delete endpoint, edit the JSON by hand" (see CONTRIBUTING.md) - revocability
+is a real security requirement for a shared credential in a way it isn't for
+registry resources.
 
 ## Using `modelmanager` from another machine
 
@@ -152,6 +180,41 @@ exactly like it does locally on the coordinator box. None of this applies to
 the Omarchy bar plugin - it only ever talks to a coordinator running on its
 own box (see the architecture notes in the README), so it has nothing to
 configure here.
+
+### Talking to someone else's coordinator (`hosts`/`--peer`)
+
+The three env vars above assume you own both machines and can just copy
+`cert.pem` over yourself. For a coordinator *you don't own* - e.g. after
+someone else ran `modelmanager grant add` for you (see "Sharing access with
+another person" above) - you don't have filesystem access to their
+`tls/cert.pem`, so there's nothing to copy. `modelmanager hosts` fetches it
+over the wire instead and has you confirm its fingerprint once
+(trust-on-first-connect, the same model SSH uses for host keys):
+
+```bash
+modelmanager hosts probe https://systemA:8778      # fingerprint only, nothing saved
+modelmanager hosts add alice https://systemA:8778  # prints the fingerprint, asks you to confirm
+modelmanager hosts list
+modelmanager hosts remove alice
+```
+
+Confirm the printed fingerprint against what alice tells you out-of-band
+(chat, in person - not through the same channel that gave you the URL)
+before accepting; `--yes` skips the prompt for scripting, but only use it
+when you've already verified the fingerprint some other way. Once trusted,
+target that coordinator by name instead of juggling `MODELMANAGER_URL`/
+`_TOKEN`/`_TLS_CERT_PATH` yourself:
+
+```bash
+modelmanager --peer alice list
+modelmanager --peer alice ensure some-model
+```
+
+Your own token (the same one you'd use locally) is what gets sent - whatever
+systems alice granted it covers, nothing more (see `modelmanager grant`
+above). `--peer` and the three env vars are independent mechanisms; use
+whichever fits - `--peer` for a coordinator you've TOFU-trusted by name,
+the env vars for one you fully own and can copy files from directly.
 
 ## Windows boxes
 

@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from .. import access_log, agent_deploy, auth, lifecycle_log
+from .. import access_log, agent_deploy, auth, grants, lifecycle_log
 from ..config import Registry, default_backup_path, default_registry_path, load_registry
 from ..errors import ModelManagerError
 from .manager import Manager
@@ -137,20 +137,24 @@ def install_error_handler(app: FastAPI) -> None:
 
 
 def install_auth_middleware(app: FastAPI) -> None:
-    """Every request needs `Authorization: Bearer <token>` matching
-    auth.read_token() - no path is exempt (including /v1/help), by design:
-    one rule, nothing to get wrong about which routes are "safe" to leave
-    open. Built as a plain JSONResponse rather than raising ModelManagerError
-    because middleware runs outside install_error_handler's reach in some
-    Starlette versions - returning directly here is simpler than relying on
-    that to catch it.
+    """Every request needs `Authorization: Bearer <token>` matching either
+    auth.read_token() (the owner token, full access) or a token someone else
+    was `grant`-ed (see modelmanager/grants.py - scoped to specific systems,
+    checked at the route layer via request.state.grant, never here since this
+    middleware runs before path params are resolved). No path is exempt
+    (including /v1/help), by design: one rule, nothing to get wrong about
+    which routes are "safe" to leave open. Built as a plain JSONResponse
+    rather than raising ModelManagerError because middleware runs outside
+    install_error_handler's reach in some Starlette versions - returning
+    directly here is simpler than relying on that to catch it.
 
-    Reads the expected token fresh on every request instead of caching it at
-    startup, so `modelmanager auth rotate` takes effect immediately with no
-    coordinator restart - the file is tiny and local, the extra read is
-    negligible next to an SSH-backed ensure()/stop() call.
+    Reads the expected token and grants fresh on every request instead of
+    caching them at startup, so `modelmanager auth rotate`/`grant add`/
+    `grant remove` take effect immediately with no coordinator restart - the
+    files are tiny and local, the extra read is negligible next to an
+    SSH-backed ensure()/stop() call.
 
-    No token configured at all (vs. a wrong one) is treated as a server
+    No owner token configured at all (vs. a wrong one) is treated as a server
     misconfiguration, not a client auth failure - fails every request with a
     distinct 500/AUTH_NOT_CONFIGURED rather than quietly accepting everything
     (what today's no-auth behavior amounts to) or refusing to start the
@@ -170,7 +174,7 @@ def install_auth_middleware(app: FastAPI) -> None:
                 },
             )
         scheme, _, provided = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not provided or not hmac.compare_digest(provided, expected):
+        if scheme.lower() != "bearer" or not provided:
             return JSONResponse(
                 status_code=401,
                 content={
@@ -179,6 +183,20 @@ def install_auth_middleware(app: FastAPI) -> None:
                     "code": "UNAUTHORIZED",
                 },
             )
+        if hmac.compare_digest(provided, expected):
+            request.state.grant = None
+        else:
+            grant = grants.find_grant_by_token(provided)
+            if grant is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": "missing or invalid bearer token - pass `Authorization: Bearer <token>` "
+                                 "(see `modelmanager auth show`)",
+                        "code": "UNAUTHORIZED",
+                    },
+                )
+            request.state.grant = grant
         return await call_next(request)
 
 

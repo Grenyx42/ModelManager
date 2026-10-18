@@ -299,6 +299,36 @@ def default_token_path() -> Path:
     return Path(xdg_config) / "modelmanager" / "token"
 
 
+def default_grants_path() -> Path:
+    env_path = os.environ.get("MODELMANAGER_GRANTS_PATH")
+    if env_path:
+        return Path(env_path)
+    # Same reasoning/XDG convention as default_token_path() above.
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg_config) / "modelmanager" / "grants.json"
+
+
+def default_known_hosts_path() -> Path:
+    """Where `modelmanager hosts add` records trusted remote coordinators
+    (trust-on-first-connect: name -> {url, cert_file, fingerprint,
+    added_at}) - same XDG convention as default_token_path()."""
+    env_path = os.environ.get("MODELMANAGER_KNOWN_HOSTS_PATH")
+    if env_path:
+        return Path(env_path)
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg_config) / "modelmanager" / "known_hosts.json"
+
+
+def default_known_hosts_dir() -> Path:
+    """Where each trusted remote coordinator's own saved cert PEM lives
+    (<name>.pem) - these aren't secret (they're public certs), just pinned."""
+    env_path = os.environ.get("MODELMANAGER_KNOWN_HOSTS_DIR")
+    if env_path:
+        return Path(env_path)
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg_config) / "modelmanager" / "known_hosts"
+
+
 def default_tls_cert_path() -> Path:
     env_path = os.environ.get("MODELMANAGER_TLS_CERT_PATH")
     if env_path:

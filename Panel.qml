@@ -44,8 +44,136 @@ Panel {
   // Routing through a real shell (which always exists and always starts)
   // turns a missing mmBin into an ordinary nonzero exit (127) with a
   // stderr message, which onExited already knows how to handle.
+  // "" (default) means this coordinator's own local backend; otherwise the
+  // name of a trusted remote coordinator from `modelmanager hosts list`
+  // (see the host field above the model filter, and activeHostCommand's
+  // own comment). Every data-fetching/action command below should go
+  // through mmCommand (not mmLocalHostsCommand) so it respects this.
+  property string activeHost: ""
+
   function mmCommand(args) {
+    var full = root.activeHost !== "" ? ["--peer", root.activeHost].concat(args) : args
+    return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(full)
+  }
+
+  // For `modelmanager hosts ...` itself only - managing which coordinators
+  // *this* machine trusts is always a local decision, never routed through
+  // whatever coordinator activeHost currently points at.
+  function mmLocalHostsCommand(args) {
     return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(args)
+  }
+
+  // Most-recently-connected first - `modelmanager hosts list` already
+  // sorts by last_connected desc (see cli.py's cmd_hosts), so this is
+  // exactly the order hostField's Up/Down history cycling below walks.
+  property var knownHostNames: []
+  // [most-recent remote, ..., oldest remote, ""] - local sits at the far
+  // end of the cycle, like "go home" rather than competing with real
+  // connection history for the top slot.
+  readonly property var hostHistory: root.knownHostNames.concat([""])
+  // -1 = not currently browsing history (hostField holds free-typed or
+  // just-switched-to text); otherwise an index into hostHistory, so
+  // repeated Up/Down presses keep walking from where the last one left off
+  // instead of re-deriving a position from whatever text happens to be
+  // showing.
+  property int hostHistoryIndex: -1
+  property bool hostProbeRunning: false
+  property bool hostAddRunning: false
+  // The host name/text currently being probed or confirmed - "" once
+  // resolved (switched, cancelled, or failed back to idle).
+  property string hostProbePendingName: ""
+  // "" until a probe succeeds - drives the trust-confirmation block.
+  property string hostProbeFingerprint: ""
+  property string hostProbeError: ""
+  // Drives hostTrustBlock below (and hides modelsFlick/the Stats section
+  // while it's showing) - true from the moment a new host is probed until
+  // it's either trusted, cancelled, or fails.
+  readonly property bool hostTrustPromptActive: root.hostProbeRunning || root.hostProbeFingerprint !== "" || root.hostProbeError !== ""
+
+  function loadKnownHosts() {
+    if (!hostsListProc.running) hostsListProc.running = true
+  }
+
+  function parseKnownHosts(text) {
+    try {
+      var data = JSON.parse(text)
+      if (!Array.isArray(data)) return
+      var names = []
+      for (var i = 0; i < data.length; i++) names.push(data[i].name)
+      root.knownHostNames = names
+    } catch (e) {
+      // leave knownHostNames as-is
+    }
+  }
+
+  // Bare host/IP (optionally host:port) typed into the field -> a full URL
+  // the coordinator's own default scheme/port, same convention `serve`
+  // itself binds to (see DEFAULT_SERVE_PORT in cli.py) - good enough for a
+  // home-lab UI; hand-edit known_hosts.json (or the CLI directly) for
+  // anything unusual.
+  function normalizeHostUrl(text) {
+    var t = text.trim()
+    if (t.indexOf("://") === -1) t = "https://" + t
+    var afterScheme = t.substring(t.indexOf("://") + 3)
+    if (afterScheme.indexOf(":") === -1) t += ":8778"
+    return t
+  }
+
+  // Switching to an already-trusted name is immediate; anything else starts
+  // the trust-on-first-connect flow below instead of just failing opaquely.
+  function attemptSwitchHost(text) {
+    var t = text.trim()
+    if (t === "") { root.switchHost(""); return }
+    if (root.knownHostNames.indexOf(t) !== -1) { root.switchHost(t); return }
+    root.probeNewHost(t)
+  }
+
+  function switchHost(name) {
+    hostField.text = name
+    if (name !== "") root.touchKnownHost(name)
+    if (root.activeHost === name) return
+    root.activeHost = name
+    root.lastError = ""
+    root.actionError = ""
+    root.systemStats = ({})
+    root.statsQueue = []
+    root.statsSweepActive = false
+    root.refresh()
+    root.startStatsSweep()
+  }
+
+  // Bumps this host's last_connected so it sorts to the front of
+  // hostHistory next time knownHostNames reloads (see refresh()) - fire
+  // and forget, nothing in the UI depends on this finishing.
+  function touchKnownHost(name) {
+    hostTouchProc.command = root.mmLocalHostsCommand(["hosts", "touch", name])
+    hostTouchProc.running = false
+    hostTouchProc.running = true
+  }
+
+  function probeNewHost(hostText) {
+    if (root.hostProbeRunning || root.hostAddRunning) return
+    root.hostProbePendingName = hostText
+    root.hostProbeFingerprint = ""
+    root.hostProbeError = ""
+    root.hostProbeRunning = true
+    hostsProbeProc.command = root.mmLocalHostsCommand(["hosts", "probe", root.normalizeHostUrl(hostText)])
+    hostsProbeProc.running = true
+  }
+
+  function confirmHostTrust() {
+    if (root.hostAddRunning || root.hostProbePendingName === "") return
+    root.hostAddRunning = true
+    var url = root.normalizeHostUrl(root.hostProbePendingName)
+    hostsAddProc.command = root.mmLocalHostsCommand(["hosts", "add", root.hostProbePendingName, url, "--yes"])
+    hostsAddProc.running = true
+  }
+
+  function rejectHostTrust() {
+    hostField.text = root.activeHost
+    root.hostProbePendingName = ""
+    root.hostProbeFingerprint = ""
+    root.hostProbeError = ""
   }
 
   // Resolved relative to this file's own install location - works unchanged
@@ -284,9 +412,17 @@ Panel {
     if (!systemsProc.running) systemsProc.running = true
     if (!gpuGroupsProc.running) gpuGroupsProc.running = true
     if (!groupsProc.running) groupsProc.running = true
+    root.loadKnownHosts()
   }
 
+  // reload-status is about *this* coordinator's own registry.json (did it
+  // just reload, did a hand edit break it) - an owner-only concept on the
+  // REST side (see routes._require_owner), and not something a scoped
+  // grant could ever call successfully even if it weren't: skip it
+  // entirely while targeting a remote peer, rather than cycling a 403
+  // every 3s and clobbering root.lastError with it.
   function checkReloadStatus() {
+    if (root.activeHost !== "") return
     if (!reloadStatusProc.running) reloadStatusProc.running = true
   }
 
@@ -1095,6 +1231,85 @@ Panel {
     command: []
   }
 
+  Process {
+    id: hostsListProc
+    command: root.mmLocalHostsCommand(["hosts", "list"])
+    stdout: StdioCollector {
+      id: hostsListOut
+      waitForEnd: true
+      onStreamFinished: root.parseKnownHosts(text)
+    }
+  }
+
+  // Trust-on-first-connect probe: fetches the candidate coordinator's cert
+  // fingerprint without saving anything (mirrors `modelmanager hosts
+  // probe`) - confirmHostTrust()/hostsAddProc below is the only thing that
+  // actually persists it, and only after the fingerprint's been shown.
+  Process {
+    id: hostsProbeProc
+    command: []
+    stdout: StdioCollector { id: hostsProbeOut; waitForEnd: true }
+    stderr: StdioCollector {
+      id: hostsProbeErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.hostProbeError = text.trim() }
+    }
+    onExited: (code) => {
+      root.hostProbeRunning = false
+      if (code !== 0) {
+        if (root.hostProbeError === "") root.hostProbeError = "couldn't reach " + root.hostProbePendingName
+        root.hostProbePendingName = ""
+        hostField.text = root.activeHost
+        return
+      }
+      try {
+        var data = JSON.parse(hostsProbeOut.text)
+        if (data && data.error) {
+          root.hostProbeError = data.error
+          root.hostProbePendingName = ""
+          hostField.text = root.activeHost
+        } else {
+          root.hostProbeFingerprint = (data && data.fingerprint) || ""
+        }
+      } catch (e) {
+        root.hostProbeError = "bad response from hosts probe"
+        root.hostProbePendingName = ""
+        hostField.text = root.activeHost
+      }
+    }
+  }
+
+  Process {
+    id: hostsAddProc
+    command: []
+    stdout: StdioCollector { id: hostsAddOut; waitForEnd: true }
+    stderr: StdioCollector {
+      id: hostsAddErr
+      waitForEnd: true
+      onStreamFinished: { if (text.trim() !== "") root.hostProbeError = text.trim() }
+    }
+    onExited: (code) => {
+      root.hostAddRunning = false
+      if (code === 0) {
+        var name = root.hostProbePendingName
+        root.hostProbeFingerprint = ""
+        root.hostProbePendingName = ""
+        root.hostProbeError = ""
+        root.knownHostNames = root.knownHostNames.concat([name])
+        root.switchHost(name)
+      } else {
+        if (root.hostProbeError === "") root.hostProbeError = "failed to trust host (exit " + code + ")"
+        hostField.text = root.activeHost
+      }
+    }
+  }
+
+  // Fire-and-forget (see touchKnownHost) - nothing reads its output.
+  Process {
+    id: hostTouchProc
+    command: []
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
@@ -1138,8 +1353,72 @@ Panel {
       // moveRequested mid-typing, etc.) - the documented pattern for an
       // inline text editor inside a PanelKeyCatcher (see its own comments)
       // is exactly this: short-circuit while the editor has focus.
-      blocked: modelFilterField.activeFocus
+      blocked: modelFilterField.activeFocus || hostField.activeFocus
       onCloseRequested: root.close()
+
+      // Its own row at the very top, above the Models header/filter row -
+      // this picks which *coordinator* everything below targets, a
+      // different kind of decision than filtering the current one's model
+      // list, so it doesn't share a row with that filter field.
+      Item {
+        id: hostRow
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        implicitHeight: Math.max(hostLabel.implicitHeight, hostField.implicitHeight)
+        height: implicitHeight
+
+        Text {
+          id: hostLabel
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Coordinator:"
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // Switches which coordinator the whole panel targets: empty/"local"
+        // means this machine's own backend; typing an already-trusted name
+        // (modelmanager hosts list) switches immediately, anything else
+        // starts the trust-on-first-connect flow (see hostTrustBlock below)
+        // before switching. Not bound to root.activeHost via a `text:`
+        // binding - typing in a TextField would permanently break that
+        // binding - switchHost()/rejectHostTrust() set hostField.text
+        // directly instead.
+        TextField {
+          id: hostField
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(230)
+          verticalPadding: Style.space(2)
+          placeholderText: "local - type a host/IP, or ↑ for history"
+          foreground: root.activeHost !== "" ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+          Keys.onReturnPressed: root.attemptSwitchHost(text)
+          Keys.onEnterPressed: root.attemptSwitchHost(text)
+          Keys.onEscapePressed: root.close()
+          // Shell/browser-style history: Up walks back through
+          // hostHistory (most-recently-connected coordinator first, local
+          // last), Down walks forward again. A manual edit that doesn't
+          // match the currently-selected entry drops back out of "browsing
+          // history" mode, so the next Up starts over from the top rather
+          // than continuing from some now-irrelevant position.
+          Keys.onUpPressed: {
+            if (root.hostHistory.length === 0) return
+            root.hostHistoryIndex = Math.min(root.hostHistory.length - 1, root.hostHistoryIndex + 1)
+            hostField.text = root.hostHistory[root.hostHistoryIndex]
+          }
+          Keys.onDownPressed: {
+            if (root.hostHistoryIndex < 0) return
+            root.hostHistoryIndex -= 1
+            hostField.text = root.hostHistoryIndex >= 0 ? root.hostHistory[root.hostHistoryIndex] : ""
+          }
+          onTextChanged: {
+            if (root.hostHistoryIndex >= 0 && root.hostHistory[root.hostHistoryIndex] === text) return
+            root.hostHistoryIndex = -1
+          }
+        }
+      }
 
       // Pinned above the model list (not inside it) so the Models header/
       // filter stays reachable no matter how far that list is scrolled -
@@ -1147,7 +1426,8 @@ Panel {
       // change the filter from.
       Item {
         id: modelsHeaderRow
-        anchors.top: parent.top
+        anchors.top: hostRow.bottom
+        anchors.topMargin: Style.space(8)
         anchors.left: parent.left
         anchors.right: parent.right
         implicitHeight: Math.max(modelsHeader.implicitHeight, modelFilterField.implicitHeight)
@@ -1177,6 +1457,71 @@ Panel {
         }
       }
 
+      // Takes over the Models list's exact slot while a host trust decision
+      // is pending (see root.hostTrustPromptActive) - modelsFlick hides
+      // itself below, and the Stats section hides itself inside bottomBlock,
+      // so this is the only thing showing instead of the fingerprint prompt
+      // floating awkwardly over live model/stats content underneath it.
+      Column {
+        id: hostTrustBlock
+        visible: root.hostTrustPromptActive
+        anchors.top: modelsHeaderRow.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        spacing: Style.space(6)
+
+        Text {
+          visible: root.hostProbeRunning
+          text: "Connecting to " + root.hostProbePendingName + "..."
+          color: root.bar ? root.bar.foreground : Color.foreground
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          visible: root.hostProbeFingerprint !== ""
+          text: "New host " + root.hostProbePendingName + " - certificate fingerprint:\n" + root.hostProbeFingerprint
+            + "\nConfirm this matches what that machine's owner told you out-of-band before trusting it."
+          color: root.bar ? root.bar.foreground : Color.foreground
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Row {
+          visible: root.hostProbeFingerprint !== ""
+          spacing: Style.space(8)
+          Button {
+            text: root.hostAddRunning ? "Trusting..." : "Trust & switch"
+            enabled: !root.hostAddRunning
+            foreground: enabled ? Color.foreground : Color.muted
+            bordered: true
+            onClicked: root.confirmHostTrust()
+          }
+          Button {
+            text: "Cancel"
+            enabled: !root.hostAddRunning
+            foreground: enabled ? Color.foreground : Color.muted
+            bordered: true
+            onClicked: root.rejectHostTrust()
+          }
+        }
+
+        Text {
+          visible: root.hostProbeError !== ""
+          text: root.hostProbeError
+          color: Color.urgent
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       // Fixed-height popup: the card is always Style.space(560) tall (see
       // contentHeight above), and nothing scrolls as a whole - there's no
       // outer Flickable any more. The two lists each scroll inside their own
@@ -1187,6 +1532,7 @@ Panel {
       // so both slots clip themselves.
       Flickable {
         id: modelsFlick
+        visible: !root.hostTrustPromptActive
         anchors.top: modelsHeaderRow.bottom
         anchors.topMargin: Style.space(10)
         anchors.left: parent.left
@@ -1438,8 +1784,14 @@ Panel {
         // model yet). Reads top to bottom on purpose: status, then what
         // the button will actually do, then the skill choice to make
         // *before* clicking it, then the button itself last.
+        //
+        // Gated on activeHost === "" too: setup.sh/skill-linking/Ollama
+        // registration all act on *this* machine's own install - none of
+        // that is the right response to a remote peer being unreachable or
+        // never having had a model registered, so none of it should show
+        // while targeting one.
         Column {
-          visible: root.backendUnreachable || root.registryIsDefault
+          visible: root.activeHost === "" && (root.backendUnreachable || root.registryIsDefault)
           width: parent.width
           spacing: Style.space(6)
 
@@ -1590,7 +1942,7 @@ Panel {
         }
 
         Text {
-          visible: root.lastError !== "" && !root.backendUnreachable
+          visible: root.lastError !== "" && !root.backendUnreachable && root.activeHost === ""
           text: root.lastError
           color: Color.urgent
           wrapMode: Text.Wrap
@@ -1598,6 +1950,31 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
+
+        // Remote-target errors get their own always-shown line (unlike the
+        // local-only cases above, which route through the first-run setup
+        // block or the plain lastError text above) - a remote peer being
+        // unreachable or refusing a request (e.g. a grant missing that
+        // system) is never "run setup.sh", so none of that gating applies.
+        Text {
+          visible: root.activeHost !== "" && root.lastError !== ""
+          text: "Peer '" + root.activeHost + "': " + root.lastError
+          color: Color.urgent
+          wrapMode: Text.Wrap
+          width: parent.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // Hidden entirely while a host trust decision is pending (see
+        // hostTrustBlock above) - a Column positioner skips invisible
+        // children when sizing itself, so bottomBlock shrinks to just
+        // whatever error/trust text is showing instead of leaving this
+        // stale behind it.
+        Column {
+          visible: !root.hostTrustPromptActive
+          width: parent.width
+          spacing: Style.space(10)
 
         PanelSeparator {}
         PanelSectionHeader { text: "Stats" }
@@ -1703,6 +2080,7 @@ Panel {
               }
             }
           }
+        }
         }
       }
     }

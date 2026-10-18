@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import ssl
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
+from pydantic import ValidationError
 
-from . import auth
-from .config import default_tls_cert_path, default_tls_key_path
+from . import auth, grants, known_hosts
+from .config import default_tls_cert_path, default_tls_key_path, load_registry
 
 DEFAULT_SERVE_HOST = os.environ.get("MODELMANAGER_HOST", "0.0.0.0")
 DEFAULT_SERVE_PORT = int(os.environ.get("MODELMANAGER_PORT", "8778"))
@@ -29,19 +33,50 @@ def _client(args) -> httpx.Client:
     # resolution the coordinator itself uses (see auth.read_token) - so the
     # bar plugin, which only ever shells out to this CLI, authenticates for
     # free with no changes of its own, as long as it's running as the same
-    # user that ran scripts/setup.sh.
+    # user that ran scripts/setup.sh. This same token is what gets presented
+    # to a *remote* coordinator too (via --peer below) - whoever granted you
+    # access already has a hash of this exact value (see grants.py), there's
+    # no separate per-peer credential to manage.
     token = args.token or auth.read_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+    url = args.url
+    cert_path = default_tls_cert_path()
+    peer = getattr(args, "peer", None)
+    if peer:
+        entry = known_hosts.get_known_host(peer)
+        if entry is None:
+            print(json.dumps({"error": f"unknown host {peer!r} - run `modelmanager hosts add {peer} <url>` first"}))
+            sys.exit(1)
+        url = entry["url"]
+        cert_path = Path(entry["cert_file"])
     # The coordinator's cert is self-signed (scripts/setup.sh), so it isn't
     # in any system CA bundle - pass it explicitly as the thing to trust,
     # same as copying the token, rather than verify=False (which would
     # accept *any* cert and defeat the point of TLS). A caller that hasn't
-    # been handed a copy of it yet falls back to the system CA bundle,
-    # which will fail verification with a clear TLS error pointing at the
-    # real problem instead of crashing on a missing file.
-    cert_path = default_tls_cert_path()
+    # been handed a copy of it yet (or hasn't `hosts add`-ed a --peer) falls
+    # back to the system CA bundle, which will fail verification with a
+    # clear TLS error pointing at the real problem instead of crashing on a
+    # missing file.
     verify = str(cert_path) if cert_path.exists() else True
-    return httpx.Client(base_url=args.url, timeout=30, headers=headers, verify=verify)
+    return httpx.Client(base_url=url, timeout=30, headers=headers, verify=verify)
+
+
+def _fetch_cert_fingerprint(url: str) -> tuple[str, str]:
+    """Connects to `url`'s host:port and returns (pem, fingerprint) without
+    verifying anything - this *is* the trust-on-first-connect probe, so by
+    definition there's nothing yet to verify against. The fingerprint is
+    SHA256 of the cert's DER bytes, colon-hex-formatted like `openssl
+    x509 -fingerprint` / an SSH host key, for a human to visually confirm
+    out-of-band before trusting it."""
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise ValueError(f"not a valid URL: {url!r}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    pem = ssl.get_server_certificate((parsed.hostname, port))
+    der = ssl.PEM_cert_to_DER_cert(pem)
+    digest = hashlib.sha256(der).hexdigest().upper()
+    fingerprint = ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+    return pem, fingerprint
 
 
 def _print_response(resp: httpx.Response) -> int:
@@ -649,6 +684,97 @@ def cmd_auth(args) -> int:
     return 0
 
 
+def cmd_grant(args) -> int:
+    # Local-only, like cmd_auth: reads/writes grants.json directly, no
+    # coordinator round-trip. This is User A's own admin action, run on
+    # their own machine, to associate a token User B generated for their own
+    # coordinator and shared out-of-band with a name and a scoped set of
+    # systems - see modelmanager/grants.py.
+    if args.grant_action == "list":
+        entries = grants.load_grants()
+        print(json.dumps([
+            {"name": g["name"], "allowed_systems": g["allowed_systems"], "created_at": g["created_at"]}
+            for g in entries
+        ]))
+        return 0
+    if args.grant_action == "remove":
+        removed = grants.remove_grant(args.name)
+        print(json.dumps({"name": args.name, "removed": removed}))
+        return 0 if removed else 1
+    systems = [s.strip() for s in args.systems.split(",") if s.strip()]
+    try:
+        registry = load_registry()
+    except (FileNotFoundError, json.JSONDecodeError, ValidationError) as exc:
+        print(json.dumps({"error": f"couldn't load the local registry to validate systems: {exc}"}))
+        return 1
+    unknown = [s for s in systems if s not in registry.systems]
+    if unknown:
+        print(json.dumps({
+            "error": f"unknown system(s): {', '.join(unknown)} - known systems: {', '.join(sorted(registry.systems))}"
+        }))
+        return 1
+    entry = grants.add_grant(args.name, args.token, systems)
+    print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"], "created_at": entry["created_at"]}))
+    return 0
+
+
+def cmd_hosts(args) -> int:
+    # Local-only, like cmd_auth/cmd_grant: reads/writes known_hosts.json (and
+    # the per-host cert PEMs) directly, no coordinator round-trip - this
+    # manages which *other* coordinators this machine trusts, which is a
+    # decision about this CLI's own TLS trust store, not something any
+    # coordinator (even your own) should be able to drive remotely.
+    if args.hosts_action == "list":
+        entries = known_hosts.load_known_hosts()
+        # Most-recently-connected first - lets a caller (the panel's
+        # history cycling) just take the array in order, no re-sorting of
+        # its own. .get() fallback covers a known_hosts.json written before
+        # last_connected existed.
+        rows = [
+            {
+                "name": name,
+                "url": e["url"],
+                "fingerprint": e["fingerprint"],
+                "added_at": e["added_at"],
+                "last_connected": e.get("last_connected", e["added_at"]),
+            }
+            for name, e in entries.items()
+        ]
+        rows.sort(key=lambda r: r["last_connected"], reverse=True)
+        print(json.dumps(rows))
+        return 0
+    if args.hosts_action == "remove":
+        removed = known_hosts.remove_known_host(args.name)
+        print(json.dumps({"name": args.name, "removed": removed}))
+        return 0 if removed else 1
+    if args.hosts_action == "touch":
+        entry = known_hosts.touch_known_host(args.name)
+        if entry is None:
+            print(json.dumps({"error": f"unknown host {args.name!r}"}))
+            return 1
+        print(json.dumps({"name": args.name, "last_connected": entry["last_connected"]}))
+        return 0
+    try:
+        pem, fingerprint = _fetch_cert_fingerprint(args.url)
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": f"couldn't connect to {args.url}: {exc}"}))
+        return 1
+    if args.hosts_action == "probe":
+        print(json.dumps({"url": args.url, "fingerprint": fingerprint}))
+        return 0
+    # add
+    if not args.yes:
+        print(f"Fingerprint for {args.url}: {fingerprint}", file=sys.stderr)
+        print("Confirm this matches what the other side's operator told you out-of-band.", file=sys.stderr)
+        answer = input(f"Trust this certificate and save it as {args.name!r}? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print(json.dumps({"error": "not trusted - aborted, nothing saved"}))
+            return 1
+    entry = known_hosts.add_known_host(args.name, args.url, pem, fingerprint)
+    print(json.dumps({"name": args.name, "url": entry["url"], "fingerprint": entry["fingerprint"]}))
+    return 0
+
+
 def cmd_deploy_agent(args) -> int:
     params = {"force": "true"} if args.force else {}
     path = f"/v1/systems/{args.system}/deploy-agent" if args.system else "/v1/deploy-agent"
@@ -675,6 +801,11 @@ def main() -> None:
     parser.add_argument(
         "--token", default=None,
         help="bearer token for the coordinator's REST API (defaults to MODELMANAGER_TOKEN env, then the token file - see `modelmanager auth show`)",
+    )
+    parser.add_argument(
+        "--peer", default=None,
+        help="target a remote coordinator by name instead of --url/--token's defaults - "
+             "one already trusted via `modelmanager hosts add <name> <url>`",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -825,6 +956,46 @@ def main() -> None:
     p_auth.add_argument("action", choices=["show", "rotate"])
     p_auth.set_defaults(func=cmd_auth)
 
+    p_grant = sub.add_parser(
+        "grant", help="manage scoped access for other people (reads/writes grants.json directly - no coordinator needed)"
+    )
+    grant_sub = p_grant.add_subparsers(dest="grant_action", required=True)
+    p_grant_add = grant_sub.add_parser("add", help="associate a token someone shared with you to a name + allowed systems")
+    p_grant_add.add_argument("name", help="a label for this person/credential, e.g. 'bob'")
+    p_grant_add.add_argument("token", help="the token they generated locally and shared with you")
+    p_grant_add.add_argument("--systems", required=True, help="comma-separated system names from your registry.json")
+    p_grant_add.set_defaults(func=cmd_grant)
+    p_grant_list = grant_sub.add_parser("list", help="list grants (never shows tokens)")
+    p_grant_list.set_defaults(func=cmd_grant)
+    p_grant_remove = grant_sub.add_parser("remove", help="revoke a grant by name")
+    p_grant_remove.add_argument("name")
+    p_grant_remove.set_defaults(func=cmd_grant)
+
+    p_hosts = sub.add_parser(
+        "hosts",
+        help="manage trusted remote coordinators by name - trust-on-first-connect "
+             "(reads/writes known_hosts.json directly - no coordinator needed)",
+    )
+    hosts_sub = p_hosts.add_subparsers(dest="hosts_action", required=True)
+    p_hosts_probe = hosts_sub.add_parser("probe", help="fetch a coordinator's cert fingerprint without trusting it")
+    p_hosts_probe.add_argument("url", help="e.g. https://systemA:8778")
+    p_hosts_probe.set_defaults(func=cmd_hosts)
+    p_hosts_add = hosts_sub.add_parser("add", help="trust a coordinator's cert and save it under a name")
+    p_hosts_add.add_argument("name", help="a label for this coordinator, e.g. 'alice'")
+    p_hosts_add.add_argument("url", help="e.g. https://systemA:8778")
+    p_hosts_add.add_argument("--yes", action="store_true", help="skip the interactive fingerprint confirmation")
+    p_hosts_add.set_defaults(func=cmd_hosts)
+    p_hosts_list = hosts_sub.add_parser("list", help="list trusted hosts")
+    p_hosts_list.set_defaults(func=cmd_hosts)
+    p_hosts_remove = hosts_sub.add_parser("remove", help="stop trusting a host by name")
+    p_hosts_remove.add_argument("name")
+    p_hosts_remove.set_defaults(func=cmd_hosts)
+    p_hosts_touch = hosts_sub.add_parser(
+        "touch", help="bump a host's last-connected time (used internally when actually switching to it)"
+    )
+    p_hosts_touch.add_argument("name")
+    p_hosts_touch.set_defaults(func=cmd_hosts)
+
     args = parser.parse_args()
     try:
         sys.exit(args.func(args))
@@ -832,7 +1003,8 @@ def main() -> None:
         # Coordinator unreachable/timed out - one clean JSON line instead of
         # a raw traceback, so callers that just JSON.parse our stdout (e.g.
         # the bar-widget plugin) get a usable error instead of a parse failure.
-        print(json.dumps({"error": f"cannot reach coordinator at {args.url}: {exc}"}))
+        target = f"peer {args.peer!r}" if getattr(args, "peer", None) else args.url
+        print(json.dumps({"error": f"cannot reach coordinator at {target}: {exc}"}))
         sys.exit(1)
 
 

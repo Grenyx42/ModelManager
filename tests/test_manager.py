@@ -131,6 +131,37 @@ def test_resolve_name_no_match_raises_not_found():
         manager.resolve_name("does-not-exist")
 
 
+def test_model_systems_returns_the_single_system_for_a_simple_model():
+    manager, _ = make_manager()
+
+    assert manager.model_systems("nomic-embed") == {"sleek"}
+
+
+def test_model_systems_unions_across_every_candidate():
+    registry = Registry(
+        systems={
+            "sys-a": SystemConfig(os="linux", control="local"),
+            "sys-b": SystemConfig(os="linux", control="local"),
+        },
+        gpu_groups={"gpu-a": GpuGroupConfig(system="sys-a"), "gpu-b": GpuGroupConfig(system="sys-b")},
+        engines={
+            "eng-a": EngineConfig(system="sys-a", type="llama.cpp", binary="/bin/true"),
+            "eng-b": EngineConfig(system="sys-b", type="llama.cpp", binary="/bin/true"),
+        },
+        models={
+            "split-model": ModelDefinition(
+                candidates=[
+                    Candidate(engine="eng-a", gpu_group="gpu-a", port=1, model_path="/m/a.gguf"),
+                    Candidate(engine="eng-b", gpu_group="gpu-b", port=2, model_path="/m/b.gguf"),
+                ],
+            ),
+        },
+    )
+    manager = Manager(registry, StateStore())
+
+    assert manager.model_systems("split-model") == {"sys-a", "sys-b"}
+
+
 def test_ensure_accepts_a_unique_partial_name():
     manager, adapter = make_manager()
     result = manager.ensure("nomic")
@@ -504,6 +535,19 @@ def test_ensure_group_unknown_group_raises_not_found():
         manager.ensure_group("no-such-group")
 
 
+def test_ensure_group_with_allowed_models_reports_others_as_forbidden():
+    manager, adapter = make_manager()
+    manager.registry.groups["g1"] = ["nomic-embed", "model-b"]
+
+    result = manager.ensure_group("g1", allowed_models={"nomic-embed"})
+
+    by_name = {r["name"]: r for r in result["results"]}
+    assert by_name["nomic-embed"]["ok"] is True
+    assert adapter.start_calls == ["nomic-embed"]  # model-b was never even attempted
+    assert by_name["model-b"]["ok"] is False
+    assert "not permitted" in by_name["model-b"]["detail"]
+
+
 def test_verify_group_best_effort(monkeypatch):
     manager, adapter = make_manager()
     # Give the failing member its own gpu_group so its verify() failure comes
@@ -543,6 +587,21 @@ def test_stop_group_best_effort():
     assert manager.status("model-b")["active"] is False
 
 
+def test_stop_group_with_allowed_models_skips_others():
+    manager, adapter = make_manager()
+    manager.registry.groups["g1"] = ["model-b", "model-z"]
+    manager.ensure("model-b")
+
+    result = manager.stop_group("g1", allowed_models={"model-b"})
+
+    by_name = {r["name"]: r for r in result["results"]}
+    assert by_name["model-b"]["ok"] is True
+    assert by_name["model-z"]["ok"] is False
+    assert "not permitted" in by_name["model-z"]["detail"]
+    assert manager.status("model-b")["active"] is False
+    assert adapter.stop_calls == ["model-b"]  # model-z was never even attempted
+
+
 def test_group_system_models_groups_members_sharing_a_system():
     manager, _ = make_manager()
     # nomic-embed and model-b both only have a candidate on "sleek" in the
@@ -554,6 +613,15 @@ def test_group_system_models_groups_members_sharing_a_system():
     result = manager.group_system_models("g1")
 
     assert result == {"sleek": ["nomic-embed", "model-b"]}
+
+
+def test_group_system_models_with_allowed_models_drops_others_silently():
+    manager, _ = make_manager()
+    manager.registry.groups["g1"] = ["nomic-embed", "model-b"]
+
+    result = manager.group_system_models("g1", allowed_models={"nomic-embed"})
+
+    assert result == {"sleek": ["nomic-embed"]}
 
 
 def test_group_system_models_splits_members_across_systems():
@@ -711,6 +779,34 @@ def test_dry_run_group_is_best_effort():
 
     names = {r["model"] for r in result["results"]}
     assert names == {"model-b", "model-z"}
+
+
+def test_dry_run_group_with_allowed_models_reports_others_as_forbidden():
+    manager, _ = make_manager()
+    manager.registry.groups["g1"] = ["model-b", "model-z"]
+
+    result = manager.dry_run_group("g1", allowed_models={"model-b"})
+
+    by_name = {r["model"]: r for r in result["results"]}
+    assert by_name["model-b"]["action"] != "forbidden"
+    assert by_name["model-z"]["action"] == "forbidden"
+
+
+def test_verify_group_with_allowed_models_reports_others_as_forbidden(monkeypatch):
+    manager, _ = make_manager()
+    manager.registry.groups["g1"] = ["model-b", "model-z"]
+
+    def fake_post(url, json, timeout):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = manager.verify_group("g1", allowed_models={"model-b"})
+
+    by_name = {r["name"]: r for r in result["results"]}
+    assert by_name["model-b"]["ok"] is True
+    assert by_name["model-z"]["ok"] is False
+    assert "not permitted" in by_name["model-z"]["detail"]
 
 
 def test_doctor_flags_missing_files():

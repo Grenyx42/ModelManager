@@ -202,6 +202,100 @@ def test_correct_token_is_accepted(tmp_path, monkeypatch):
     assert resp.status_code == 200
 
 
+def test_grant_token_is_accepted_and_scoped_to_its_systems(tmp_path, monkeypatch):
+    _minimal_app_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps({
+        "systems": {
+            "sys-a": {"os": "linux", "control": "local"},
+            "sys-b": {"os": "linux", "control": "local"},
+        },
+        "gpu_groups": {}, "engines": {}, "models": {},
+    }))
+
+    from modelmanager import grants
+    from modelmanager.coordinator.app import create_app
+
+    grants.add_grant("bob", "bobs-token", ["sys-a"])
+
+    with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
+        allowed = client.get("/v1/systems/sys-a")
+        forbidden = client.get("/v1/systems/sys-b")
+        listed = client.get("/v1/systems")
+        write_attempt = client.post("/v1/systems/sys-a", json={"os": "linux", "control": "local"})
+
+    assert allowed.status_code == 200
+    assert forbidden.status_code == 403
+    assert forbidden.json()["code"] == "FORBIDDEN"
+    assert set(listed.json()) == {"sys-a"}
+    assert write_attempt.status_code == 403
+    assert write_attempt.json()["code"] == "FORBIDDEN"
+
+
+def test_grant_filters_dump_all_endpoints_and_blocks_model_actions_outside_scope(tmp_path, monkeypatch):
+    _minimal_app_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps({
+        "systems": {
+            "sys-a": {"os": "linux", "control": "local"},
+            "sys-b": {"os": "linux", "control": "local"},
+        },
+        "gpu_groups": {"gpu-a": {"system": "sys-a"}, "gpu-b": {"system": "sys-b"}},
+        "engines": {
+            "eng-a": {"system": "sys-a", "type": "llama.cpp", "binary": "/bin/true"},
+            "eng-b": {"system": "sys-b", "type": "llama.cpp", "binary": "/bin/true"},
+        },
+        "models": {
+            "model-a": {"candidates": [{"engine": "eng-a", "gpu_group": "gpu-a", "port": 1, "model_path": "/m/a.gguf"}]},
+            "model-b": {"candidates": [{"engine": "eng-b", "gpu_group": "gpu-b", "port": 2, "model_path": "/m/b.gguf"}]},
+        },
+        "groups": {"g1": ["model-a", "model-b"]},
+    }))
+
+    from modelmanager import grants
+    from modelmanager.coordinator.app import create_app
+
+    grants.add_grant("bob", "bobs-token", ["sys-a"])
+
+    with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
+        config = client.get("/v1/config").json()
+        models = client.get("/v1/models").json()
+        groups = client.get("/v1/groups").json()
+        allowed_get = client.get("/v1/models/model-a")
+        forbidden_get = client.get("/v1/models/model-b")
+        forbidden_ensure = client.post("/v1/models/model-b/ensure")
+        forbidden_logs = client.get("/v1/models/model-b/logs")
+        doctor_attempt = client.get("/v1/doctor")
+
+    assert set(config["systems"]) == {"sys-a"}
+    assert set(config["models"]) == {"model-a"}
+    assert [m["name"] for m in models] == ["model-a"]
+    assert groups["g1"] == ["model-a"]
+    assert allowed_get.status_code == 200
+    assert forbidden_get.status_code == 403
+    assert forbidden_ensure.status_code == 403
+    assert forbidden_logs.status_code == 403
+    assert doctor_attempt.status_code == 403  # owner-only, regardless of allowed_systems
+
+
+def test_unmatched_token_is_still_rejected_even_with_grants_configured(tmp_path, monkeypatch):
+    _minimal_app_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")
+
+    from modelmanager import grants
+    from modelmanager.coordinator.app import create_app
+
+    grants.add_grant("bob", "bobs-token", [])
+
+    with TestClient(create_app(), headers={"Authorization": "Bearer someone-elses-token"}) as client:
+        resp = client.get("/v1/help")
+
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "UNAUTHORIZED"
+
+
 def test_rotated_token_file_takes_effect_without_restart(tmp_path, monkeypatch):
     _minimal_app_env(tmp_path, monkeypatch)
     from modelmanager import auth

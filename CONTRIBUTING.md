@@ -226,3 +226,17 @@ covered, schema docs stay in sync). A couple of things it doesn't cover:
   makes themselves - ModelManager documents that it's needed but doesn't
   configure, scope, or restrict it. Don't add code that assumes a particular
   key-management scheme.
+- `modelmanager grant remove` (see `docs/deployment.md`'s "Sharing access
+  with another person") is a deliberate, scoped exception to "there is no
+  delete endpoint by design" above - revoking a shared credential needs to be
+  immediate, unlike editing a registry resource by hand. It only ever touches
+  `grants.json`, never `registry.json`, and is local-only (no REST route) -
+  don't generalize this into a general delete capability for registry
+  sections without discussing it first.
+- A scoped grant token (`modelmanager/grants.py`) can only ever read/operate
+  within its `allowed_systems` (see `routes._check_system_access`) and can
+  never write configuration (`routes._require_owner`) - any new route that
+  reads or mutates registry state needs to call one of these explicitly, the
+  same way every other route does; there's no default-safe behavior if you
+  forget, since FastAPI doesn't know a route is config-mutating or
+  system-scoped on its own.

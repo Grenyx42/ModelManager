@@ -110,6 +110,22 @@ class Manager:
             raise AmbiguousNameError(f"{name!r} matches multiple models: {', '.join(matches)}")
         raise NotFoundError(f"unknown model {name!r}")
 
+    def model_systems(self, name: str) -> set[str]:
+        """Every system any of this model's candidates could run on - unlike
+        status()/logs()/log_location()/group_system_models() (which only
+        resolve the active-or-first candidate), this unions across all of
+        them. Used to decide whether a scoped grant (see grants.py) covers
+        this model at all - a model with candidates split across a granted
+        and a non-granted system is treated as in-scope if *any* candidate's
+        system is allowed (see routes._check_system_access)."""
+        name = self.resolve_name(name)
+        definition = self.registry.models[name]
+        systems: set[str] = set()
+        for candidate in definition.candidates:
+            systems.add(self.registry.engines[candidate.engine].system)
+            systems.add(self.registry.gpu_groups[candidate.gpu_group].system)
+        return systems
+
     def ensure(self, name: str) -> EnsureResult:
         name = self.resolve_name(name)
         candidate, idx = self._ensure_loaded(name)
@@ -328,9 +344,16 @@ class Manager:
         except ModelManagerError:
             return False
 
-    def dry_run_group(self, name: str) -> dict:
+    def dry_run_group(self, name: str, allowed_models: set[str] | None = None) -> dict:
+        """allowed_models, when given (see routes._check_system_access's
+        callers), restricts which members are actually dry-run - a member
+        outside it gets a "forbidden" result instead of being attempted, same
+        best-effort-per-member shape as everything else here."""
         results = []
         for model_name in self._group_names(name):
+            if allowed_models is not None and model_name not in allowed_models:
+                results.append({"model": model_name, "action": "forbidden", "detail": "not permitted for this credential"})
+                continue
             try:
                 results.append(self.dry_run(model_name))
             except ModelManagerError as exc:
@@ -494,13 +517,21 @@ class Manager:
             raise NotFoundError(f"unknown group {name!r}")
         return self.registry.groups[name]
 
-    def ensure_group(self, name: str) -> dict:
+    def ensure_group(self, name: str, allowed_models: set[str] | None = None) -> dict:
         """Best-effort: ensure() every member model, independently. One
         member's failure (offline box, gpu_group conflict, etc.) never stops
         the rest from being attempted - the point of a group is "start my
-        usual set of models", not an all-or-nothing transaction."""
+        usual set of models", not an all-or-nothing transaction.
+
+        allowed_models, when given (see routes._check_system_access's
+        callers), restricts which members are actually ensured - a member
+        outside it is reported as a forbidden per-member result instead of
+        being attempted, same transparency as any other per-member failure."""
         results = []
         for model_name in self._group_names(name):
+            if allowed_models is not None and model_name not in allowed_models:
+                results.append({"name": model_name, "ok": False, "host": None, "port": None, "detail": "not permitted for this credential"})
+                continue
             try:
                 result = self.ensure(model_name)
                 results.append({"name": model_name, "ok": True, "host": result.host, "port": result.port, "detail": None})
@@ -508,23 +539,33 @@ class Manager:
                 results.append({"name": model_name, "ok": False, "host": None, "port": None, "detail": str(exc)})
         return {"group": name, "results": results}
 
-    def verify_group(self, name: str, timeout: float = 30.0) -> dict:
+    def verify_group(self, name: str, timeout: float = 30.0, allowed_models: set[str] | None = None) -> dict:
         results = []
         for model_name in self._group_names(name):
+            if allowed_models is not None and model_name not in allowed_models:
+                results.append({"name": model_name, "ok": False, "latency_ms": None, "detail": "not permitted for this credential"})
+                continue
             try:
                 results.append(self.verify(model_name, timeout=timeout))
             except (ModelManagerError, RuntimeError) as exc:
                 results.append({"name": model_name, "ok": False, "latency_ms": None, "detail": str(exc)})
         return {"group": name, "results": results}
 
-    def group_system_models(self, name: str) -> dict[str, list[str]]:
+    def group_system_models(self, name: str, allowed_models: set[str] | None = None) -> dict[str, list[str]]:
         """Which system each group member is running on (or would run on, if
         not currently active) - same candidate-selection rule as logs()/
         log_location(): the active candidate if running, else the first
         one. Returns {system_name: [model_names]}, since more than one
-        member can land on the same box."""
+        member can land on the same box.
+
+        allowed_models, when given, silently drops members outside it -
+        unlike the other group_* methods there's no per-member "forbidden"
+        result here, since this only feeds group_stats' per-*system*
+        results, not a per-model one."""
         result: dict[str, list[str]] = {}
         for model_name in self._group_names(name):
+            if allowed_models is not None and model_name not in allowed_models:
+                continue
             definition = self.registry.models[model_name]
             model_state = self.state.get(model_name)
             idx = model_state.active_candidate_index if model_state.is_active else 0
@@ -533,9 +574,12 @@ class Manager:
             result.setdefault(system_name, []).append(model_name)
         return result
 
-    def stop_group(self, name: str, force: bool = False) -> dict:
+    def stop_group(self, name: str, force: bool = False, allowed_models: set[str] | None = None) -> dict:
         results = []
         for model_name in self._group_names(name):
+            if allowed_models is not None and model_name not in allowed_models:
+                results.append({"name": model_name, "ok": False, "detail": "not permitted for this credential"})
+                continue
             try:
                 self.stop(model_name, force=force)
                 results.append({"name": model_name, "ok": True, "detail": None})

@@ -15,6 +15,16 @@ class NotFoundError(ModelManagerError):
     code = "NOT_FOUND"
 
 
+class ForbiddenError(ModelManagerError):
+    """The caller authenticated with a valid token, but it's a scoped grant
+    (see modelmanager/grants.py) that doesn't cover whatever system(s) or
+    operation this request needs - a granted token writing anything, or
+    touching a model/system outside its allowed_systems."""
+
+    status_code = 403
+    code = "FORBIDDEN"
+
+
 class ConflictError(ModelManagerError):
     status_code = 409
     code = "CONFLICT"
