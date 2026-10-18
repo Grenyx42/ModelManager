@@ -1488,29 +1488,26 @@ Panel {
         }
       }
 
-      // Only ever visible right after switching to a host whose requests
-      // haven't all landed yet - zero height (not just invisible) when
-      // nothing's loading, so it doesn't leave a permanent gap during the
-      // common case where everything answers in well under a second.
-      // height references hostLoadingText's implicitHeight from the
-      // *outside* rather than a Text binding its own height to its own
-      // implicitHeight conditionally - the latter is a real binding loop
-      // (confirmed directly via Quickshell's own "Binding loop detected
-      // for property height" warning).
+      // A permanently-reserved row (always the same height, whether or not
+      // there's anything to say) rather than one that pops in/out - toggling
+      // this row's own height during a fast poll shifted everything below it
+      // up and down on every refresh, which was distracting. The text itself
+      // still comes and goes, but hostLoadingText's implicitHeight doesn't
+      // depend on whether it has any text, so the row's height - and
+      // everything anchored below it - stays put.
       Item {
         id: hostLoadingRow
         anchors.top: hostRow.bottom
         anchors.topMargin: Style.space(4)
         anchors.left: parent.left
         anchors.right: parent.right
-        visible: root.hostLoadingParts.length > 0
-        height: visible ? hostLoadingText.implicitHeight : 0
+        height: hostLoadingText.implicitHeight
 
         Text {
           id: hostLoadingText
           anchors.left: parent.left
           anchors.right: parent.right
-          text: "Loading " + root.hostLoadingParts.join(", ") + "..."
+          text: root.hostLoadingParts.length > 0 ? ("Loading " + root.hostLoadingParts.join(", ") + "...") : ""
           color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
