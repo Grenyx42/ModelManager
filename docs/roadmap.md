@@ -67,29 +67,66 @@ all against a disposable scratch coordinator/registry, never the real one.
 Also confirmed the coordinator-unreachable path still prints the same clean
 JSON error line (hit it by accident via a cert mismatch in the test setup).
 
-## Phase 3 - Split `Panel.qml` into modules (DHH #3)
+## Phase 3 - Split `Panel.qml` into modules (DHH #3) - MOSTLY DONE 2026-10-19
 
-2200+ lines in one file. Pull it apart into focused QML components (e.g.
-host-targeting row + trust-confirm flow, models list/filter, stats section,
-the various `Process` definitions grouped by concern) under a `panel/` or
-`components/` subdirectory, with `Panel.qml` itself becoming a thin
-composition root.
+2200+ lines in one file. Inventoried it first: lines 1-1036 are pure state/
+coordination (root properties, functions, Timers - no visual tree, nothing
+cleanly separable without threading the whole state surface through
+multiple files for little benefit), lines 1037-1380 were 20 `Process`
+blocks, and the rest was the visual tree.
 
-- [ ] Inventory current top-level sections/responsibilities in `Panel.qml`
-      before splitting (host targeting, model list, group actions, stats,
-      setup/skill-link panel, logs/terminal launching) to decide module
-      boundaries up front rather than splitting ad hoc.
-- [ ] Extract one module at a time, keeping the app working after each
-      extraction (not one big-bang rewrite).
-- [ ] Preserve every `pendingHost`/`pendingName`/`pendingSystem` stamping
-      convention exactly - these are load-bearing for the stale-response
-      fixes already shipped this project, not incidental structure.
+- [x] Inventoried top-level sections before splitting (see above) - decided
+      the state/coordination layer stays in Panel.qml as the legitimate
+      "model" of this structure; Process definitions and self-contained
+      visual chunks move out.
+- [x] Extracted all 20 `Process` blocks into `procs/` (`DataProcs.qml`,
+      `ActionProcs.qml`, `LogProcs.qml`, `HostProcs.qml`, `SetupProcs.qml`),
+      grouped by concern, each taking `required property var root`.
+      Instantiated in Panel.qml under their original ids via
+      `property alias xProc: group.xProc`, so every existing
+      `xProc.running`/`.pendingHost` call site in Panel.qml's own functions
+      kept working with zero changes.
+- [x] Extracted 4 self-contained visual chunks into `components/`
+      (`HostTrustBlock.qml`, `ModelsList.qml`, `BottomPanel.qml`,
+      `Toast.qml`) - each takes `root` and reads `root.*`/`root.xProc.*`;
+      positioning (anchors/visible) stays at the instantiation site in
+      Panel.qml since it depends on sibling ids that live there.
+- [x] Preserved every `pendingHost`/`pendingName` stamping convention
+      exactly - unchanged inside the extracted Process files.
+- [x] One small addition needed: `procs/HostProcs.qml`'s probe/add failure
+      paths used to poke `hostField.text` directly; added `root.
+      resetHostField()` so they don't need bare access to a TextField that
+      now lives in Panel.qml's own (not-yet-extracted) visual tree.
+- [ ] **Deferred, not abandoned**: `hostRow` (Coordinator field),
+      `hostLoadingRow`, and `modelsHeaderRow` are still inline in Panel.qml.
+      They're smaller, and `hostRow`'s `hostField` and `modelsHeaderRow`'s
+      `modelFilterField` are both read by `keyCatcher.blocked` - extracting
+      them cleanly needs an exposed alias (e.g. `property alias
+      fieldActiveFocus: hostField.activeFocus`) plus updating every
+      external call site that pokes `hostField.text` (`switchHost()`,
+      `rejectHostTrust()`). Worth doing as a follow-up, not worth rushing
+      in the same pass as the lower-risk extractions above.
 
-**Resolve/test:** after each extraction, `omarchy-restart-shell` and
-click through the affected area live; at the end, a full click-through of
-every panel feature (local models, remote host switch + trust prompt,
-group ensure/stop, stats, logs) exactly as done when each feature was
-originally verified.
+Net result: `Panel.qml` 2225 -> 1311 lines; 9 new files (procs/ + 
+components/) totaling ~1100 lines, each with a header comment explaining
+its scope.
+
+**Resolve/test:** `pytest` (249 passed, unrelated to QML but confirms no
+Python-side regression); `omarchy-restart-shell` after each extraction
+step, checking `quickshell log -p /usr/share/omarchy/shell` for binding-loop/
+type errors each time (none at any step); grepped every new file for stray
+bare references to a Process id or visual id that moved elsewhere (none
+found - every cross-reference correctly goes through `root.`); toggled the
+live panel via `omarchy-shell shell toggle slideout.modelmanager` against
+the real production coordinator on this machine and confirmed via its
+access-log that `/v1/systems`, `/v1/config`, `/v1/models`, `/v1/groups`,
+and `/v1/systems/stats` all actually fired and returned 200 immediately
+after - i.e. the extracted DataProcs/ModelsList/BottomPanel wiring is
+exercised end-to-end against real data, not just "no parse error." Did not
+click an actual Ensure/Stop button against the real production coordinator
+(that would act on real running models) - **a human click-through of the
+panel (open it, switch hosts, Ensure/Stop a model, check Stats/Logs) is
+still the one verification step only the user can do.**
 
 ## Phase 4 - Security/risk surface pass (0xSero #1)
 

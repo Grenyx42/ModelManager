@@ -5,6 +5,8 @@ import Quickshell.Io
 import Quickshell.Wayland
 import qs.Ui
 import qs.Commons
+import "procs"
+import "components"
 
 // Bar icon + panel for the ModelManager coordinator. All state comes from
 // shelling out to the `modelmanager` CLI, which just talks to the local
@@ -207,10 +209,18 @@ Panel {
   }
 
   function rejectHostTrust() {
-    hostField.text = root.activeHost
+    root.resetHostField()
     root.hostProbePendingName = ""
     root.hostProbeFingerprint = ""
     root.hostProbeError = ""
+  }
+
+  // Lets procs/HostProcs.qml (a failed probe/add) put the field back to
+  // showing whatever's actually active, without needing bare access to
+  // hostField itself - that TextField lives in this file's own visual
+  // tree, not there.
+  function resetHostField() {
+    hostField.text = root.activeHost
   }
 
   // Resolved relative to this file's own install location - works unchanged
@@ -1034,349 +1044,43 @@ Panel {
     onTriggered: root.fastStatsMode = false
   }
 
-  Process {
-    id: listProc
-    // See refresh()'s own comment: pendingHost is stamped with
-    // root.activeHost at launch, and every handler below checks it's still
-    // current before touching any state - a request that was in flight for
-    // a previous host (refresh() couldn't start a fresh one on top of it)
-    // must not clobber state for whatever's active by the time it finally
-    // lands.
-    property string pendingHost: ""
-    command: root.mmCommand(["list"])
-    stdout: StdioCollector {
-      id: listOut
-      waitForEnd: true
-      onStreamFinished: { if (listProc.pendingHost === root.activeHost) root.parseModels(text) }
-    }
-    stderr: StdioCollector {
-      id: listErr
-      waitForEnd: true
-      onStreamFinished: { if (listProc.pendingHost === root.activeHost && text.trim() !== "") root.lastError = text.trim() }
-    }
-    // A missing/unreadable mmBin (venv never set up - see scripts/setup.sh)
-    // now reaches here as a normal nonzero exit via mmCommand()'s sh
-    // wrapper (see its own comment) - sh's own "command not found"/"not
-    // executable" exit codes (127/126) always mean mmBin itself is the
-    // problem, so they take priority and overwrite lastError even if sh's
-    // raw stderr ("No such file or directory") already landed there first;
-    // without this, the panel would silently sit empty forever with no
-    // indication why.
-    onExited: (code) => {
-      if (listProc.pendingHost !== root.activeHost) return
-      if (code === 126 || code === 127 || (code !== 0 && root.lastError === "")) {
-        root.lastError = "can't run " + root.mmBin + " - run this repo's scripts/setup.sh, or set MODELMANAGER_BIN if installed elsewhere"
-        root.checkFreshInstall()
-      }
-    }
-  }
+  // Every Process this panel runs, grouped by concern and moved into
+  // procs/ - see each file's own header comment. Instantiated here under
+  // the exact same ids the inline Process blocks used to have (via
+  // property alias), so every `xProc.running`/`.pendingHost` call site in
+  // this file's own functions above keeps working completely unchanged.
+  DataProcs { id: dataProcs; root: root }
+  property alias listProc: dataProcs.listProc
+  property alias systemsProc: dataProcs.systemsProc
+  property alias gpuGroupsProc: dataProcs.gpuGroupsProc
+  property alias groupsProc: dataProcs.groupsProc
+  property alias statsSweepProc: dataProcs.statsSweepProc
+  property alias reloadStatusProc: dataProcs.reloadStatusProc
 
-  Process {
-    id: registryDefaultCheckProc
-    command: []
-    onExited: (code) => { root.registryIsDefault = (code === 0) }
-  }
+  ActionProcs { id: actionProcs; root: root }
+  property alias ensureProc: actionProcs.ensureProc
+  property alias stopProc: actionProcs.stopProc
+  property alias groupEnsureProc: actionProcs.groupEnsureProc
+  property alias groupStopProc: actionProcs.groupStopProc
 
-  Process {
-    id: setupProc
-    // waitForEnd: false (unlike every other StdioCollector in this file) -
-    // confirmed directly: true buffers everything and fires dataChanged
-    // exactly once at the very end, same timing as streamFinished; false
-    // fires it per chunk as output actually arrives, which is what lets
-    // the live-output Text below update in real time while this runs
-    // instead of jumping straight from nothing to the final result.
-    stdout: StdioCollector { id: setupOut; waitForEnd: false }
-    stderr: StdioCollector {
-      id: setupErr
-      waitForEnd: false
-      onStreamFinished: { if (text.trim() !== "") root.setupResult = text.trim() }
-    }
-    onExited: (code) => {
-      root.setupRunning = false
-      if (code === 0) {
-        // Overrides any benign stderr noise above - a zero exit from
-        // setup.sh's own `set -e` means it actually finished successfully.
-        root.setupResult = "ok"
-        root.refresh()
-        root.checkFreshInstall()
-        root.applyPendingSkillLinks()
-        root.applyPendingOllamaRegistration()
-      } else if (root.setupResult === "") {
-        root.setupResult = "setup.sh failed (exit " + code + ")"
-      }
-    }
-  }
+  LogProcs { id: logProcsGroup; root: root }
+  property alias logPathProc: logProcsGroup.logPathProc
+  property alias terminalProc: logProcsGroup.terminalProc
 
-  Process {
-    id: skillLinkProc
-    // Any stderr here means mkdir/ln itself failed (bad permissions, a
-    // same-named non-symlink already there) - genuinely unexpected, since
-    // skillDirPath always exists (it ships with the plugin) and the
-    // destination is always a path this user owns.
-    property string lastStderr: ""
-    stderr: StdioCollector {
-      id: skillLinkErr
-      waitForEnd: true
-      onStreamFinished: { skillLinkProc.lastStderr = text.trim() }
-    }
-    onExited: (code) => {
-      root.skillLinkRunning = false
-      root.skillLinkDoneList = root.skillLinkDoneList.concat([
-        root.skillLinkCurrentAgent + ": " + (code === 0
-          ? "linked"
-          : "failed" + (skillLinkProc.lastStderr !== "" ? " (" + skillLinkProc.lastStderr + ")" : " (exit " + code + ")"))
-      ])
-      skillLinkProc.lastStderr = ""
-      root.processSkillLinkQueue()
-    }
-  }
+  HostProcs { id: hostProcsGroup; root: root }
+  property alias hostsListProc: hostProcsGroup.hostsListProc
+  property alias hostsProbeProc: hostProcsGroup.hostsProbeProc
+  property alias hostsAddProc: hostProcsGroup.hostsAddProc
+  property alias hostTouchProc: hostProcsGroup.hostTouchProc
 
-  Process {
-    id: ollamaRegisterProc
-    stdout: StdioCollector { id: ollamaRegisterOut; waitForEnd: true }
-    stderr: StdioCollector {
-      id: ollamaRegisterErr
-      waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.ollamaRegisterResult = text.trim() }
-    }
-    onExited: (code) => {
-      root.ollamaRegisterRunning = false
-      if (code === 0) root.ollamaRegisterResult = ollamaRegisterOut.text.trim()
-      else if (root.ollamaRegisterResult === "") root.ollamaRegisterResult = "failed (exit " + code + ")"
-    }
-  }
+  SetupProcs { id: setupProcsGroup; root: root }
+  property alias registryDefaultCheckProc: setupProcsGroup.registryDefaultCheckProc
+  property alias setupProc: setupProcsGroup.setupProc
+  property alias skillLinkProc: setupProcsGroup.skillLinkProc
+  property alias ollamaRegisterProc: setupProcsGroup.ollamaRegisterProc
+  property alias setupOut: setupProcsGroup.setupOut
+  property alias setupErr: setupProcsGroup.setupErr
 
-  Process {
-    id: reloadStatusProc
-    command: root.mmCommand(["reload-status"])
-    stdout: StdioCollector { id: reloadStatusOut; waitForEnd: true; onStreamFinished: root.parseReloadStatus(text) }
-  }
-
-  Process {
-    id: systemsProc
-    property string pendingHost: ""
-    command: root.mmCommand(["systems"])
-    stdout: StdioCollector {
-      id: systemsOut
-      waitForEnd: true
-      onStreamFinished: { if (systemsProc.pendingHost === root.activeHost) root.parseSystems(text) }
-    }
-  }
-
-  Process {
-    id: gpuGroupsProc
-    property string pendingHost: ""
-    command: root.mmCommand(["config"])
-    stdout: StdioCollector {
-      id: gpuGroupsOut
-      waitForEnd: true
-      onStreamFinished: { if (gpuGroupsProc.pendingHost === root.activeHost) root.parseGpuGroupSystems(text) }
-    }
-  }
-
-  Process {
-    id: ensureProc
-    property string pendingName: ""
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: ensureOut
-      waitForEnd: true
-      onStreamFinished: { if (ensureProc.pendingHost === root.activeHost) root.parseActionResult("ensure", ensureProc.pendingName, text) }
-    }
-    onExited: (code) => {
-      if (ensureProc.pendingHost !== root.activeHost) return
-      if (code !== 0 && root.actionError === "") {
-        root.actionError = "ensure " + ensureProc.pendingName + " failed (exit " + code + ")"
-      }
-      root.refresh()
-      root.triggerFastStats()
-    }
-  }
-
-  Process {
-    id: stopProc
-    property string pendingName: ""
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: stopOut
-      waitForEnd: true
-      onStreamFinished: { if (stopProc.pendingHost === root.activeHost) root.parseActionResult("stop", stopProc.pendingName, text) }
-    }
-    onExited: (code) => {
-      if (stopProc.pendingHost !== root.activeHost) return
-      if (code !== 0 && root.actionError === "") {
-        root.actionError = "stop " + stopProc.pendingName + " failed (exit " + code + ")"
-      }
-      root.refresh()
-      root.triggerFastStats()
-    }
-  }
-
-  Process {
-    id: groupsProc
-    property string pendingHost: ""
-    command: root.mmCommand(["groups"])
-    stdout: StdioCollector {
-      id: groupsOut
-      waitForEnd: true
-      onStreamFinished: { if (groupsProc.pendingHost === root.activeHost) root.parseGroups(text) }
-    }
-  }
-
-  Process {
-    id: groupEnsureProc
-    property string pendingName: ""
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: groupEnsureOut
-      waitForEnd: true
-      onStreamFinished: { if (groupEnsureProc.pendingHost === root.activeHost) root.parseGroupActionResult("group-ensure", groupEnsureProc.pendingName, text) }
-    }
-    onExited: (code) => {
-      if (groupEnsureProc.pendingHost !== root.activeHost) return
-      if (code !== 0 && root.actionError === "") {
-        root.actionError = "group-ensure " + groupEnsureProc.pendingName + " failed (exit " + code + ")"
-      }
-      root.refresh()
-      root.triggerFastStats()
-    }
-  }
-
-  Process {
-    id: groupStopProc
-    property string pendingName: ""
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: groupStopOut
-      waitForEnd: true
-      onStreamFinished: { if (groupStopProc.pendingHost === root.activeHost) root.parseGroupActionResult("group-stop", groupStopProc.pendingName, text) }
-    }
-    onExited: (code) => {
-      if (groupStopProc.pendingHost !== root.activeHost) return
-      if (code !== 0 && root.actionError === "") {
-        root.actionError = "group-stop " + groupStopProc.pendingName + " failed (exit " + code + ")"
-      }
-      root.refresh()
-      root.triggerFastStats()
-    }
-  }
-
-  Process {
-    id: statsSweepProc
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: statsSweepOut
-      waitForEnd: true
-      onStreamFinished: { if (statsSweepProc.pendingHost === root.activeHost) root.parseAllSystemStats(text) }
-    }
-  }
-
-  Process {
-    id: logPathProc
-    property string pendingHost: ""
-    command: []
-    stdout: StdioCollector {
-      id: logPathOut
-      waitForEnd: true
-      onStreamFinished: { if (logPathProc.pendingHost === root.activeHost) root.launchTerminalForLogPath(text) }
-    }
-    stderr: StdioCollector {
-      id: logPathErr
-      waitForEnd: true
-      onStreamFinished: { if (logPathProc.pendingHost === root.activeHost && text.trim() !== "") root.launchTerminalForLogPath("") }
-    }
-  }
-
-  // Fire-and-forget: the terminal window it opens runs independently of us,
-  // so there's nothing to collect here.
-  Process {
-    id: terminalProc
-    command: []
-  }
-
-  Process {
-    id: hostsListProc
-    command: root.mmLocalHostsCommand(["hosts", "list"])
-    stdout: StdioCollector {
-      id: hostsListOut
-      waitForEnd: true
-      onStreamFinished: root.parseKnownHosts(text)
-    }
-  }
-
-  // Trust-on-first-connect probe: fetches the candidate coordinator's cert
-  // fingerprint without saving anything (mirrors `modelmanager hosts
-  // probe`) - confirmHostTrust()/hostsAddProc below is the only thing that
-  // actually persists it, and only after the fingerprint's been shown.
-  Process {
-    id: hostsProbeProc
-    command: []
-    stdout: StdioCollector { id: hostsProbeOut; waitForEnd: true }
-    stderr: StdioCollector {
-      id: hostsProbeErr
-      waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.hostProbeError = text.trim() }
-    }
-    onExited: (code) => {
-      root.hostProbeRunning = false
-      if (code !== 0) {
-        if (root.hostProbeError === "") root.hostProbeError = "couldn't reach " + root.hostProbePendingName
-        root.hostProbePendingName = ""
-        hostField.text = root.activeHost
-        return
-      }
-      try {
-        var data = JSON.parse(hostsProbeOut.text)
-        if (data && data.error) {
-          root.hostProbeError = data.error
-          root.hostProbePendingName = ""
-          hostField.text = root.activeHost
-        } else {
-          root.hostProbeFingerprint = (data && data.fingerprint) || ""
-        }
-      } catch (e) {
-        root.hostProbeError = "bad response from hosts probe"
-        root.hostProbePendingName = ""
-        hostField.text = root.activeHost
-      }
-    }
-  }
-
-  Process {
-    id: hostsAddProc
-    command: []
-    stdout: StdioCollector { id: hostsAddOut; waitForEnd: true }
-    stderr: StdioCollector {
-      id: hostsAddErr
-      waitForEnd: true
-      onStreamFinished: { if (text.trim() !== "") root.hostProbeError = text.trim() }
-    }
-    onExited: (code) => {
-      root.hostAddRunning = false
-      if (code === 0) {
-        var name = root.hostProbePendingName
-        root.hostProbeFingerprint = ""
-        root.hostProbePendingName = ""
-        root.hostProbeError = ""
-        root.knownHostNames = root.knownHostNames.concat([name])
-        root.switchHost(name)
-      } else {
-        if (root.hostProbeError === "") root.hostProbeError = "failed to trust host (exit " + code + ")"
-        hostField.text = root.activeHost
-      }
-    }
-  }
-
-  // Fire-and-forget (see touchKnownHost) - nothing reads its output.
-  Process {
-    id: hostTouchProc
-    command: []
-  }
 
   BarIconButton {
     id: button
@@ -1556,64 +1260,14 @@ Panel {
       // itself below, and the Stats section hides itself inside bottomBlock,
       // so this is the only thing showing instead of the fingerprint prompt
       // floating awkwardly over live model/stats content underneath it.
-      Column {
+      HostTrustBlock {
         id: hostTrustBlock
+        root: root
         visible: root.hostTrustPromptActive
         anchors.top: modelsHeaderRow.bottom
         anchors.topMargin: Style.space(10)
         anchors.left: parent.left
         anchors.right: parent.right
-        spacing: Style.space(6)
-
-        Text {
-          visible: root.hostProbeRunning
-          text: "Connecting to " + root.hostProbePendingName + "..."
-          color: root.bar ? root.bar.foreground : Color.foreground
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        Text {
-          visible: root.hostProbeFingerprint !== ""
-          text: "New host " + root.hostProbePendingName + " - certificate fingerprint:\n" + root.hostProbeFingerprint
-            + "\nConfirm this matches what that machine's owner told you out-of-band before trusting it."
-          color: root.bar ? root.bar.foreground : Color.foreground
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        Row {
-          visible: root.hostProbeFingerprint !== ""
-          spacing: Style.space(8)
-          Button {
-            text: root.hostAddRunning ? "Trusting..." : "Trust & switch"
-            enabled: !root.hostAddRunning
-            foreground: enabled ? Color.foreground : Color.muted
-            bordered: true
-            onClicked: root.confirmHostTrust()
-          }
-          Button {
-            text: "Cancel"
-            enabled: !root.hostAddRunning
-            foreground: enabled ? Color.foreground : Color.muted
-            bordered: true
-            onClicked: root.rejectHostTrust()
-          }
-        }
-
-        Text {
-          visible: root.hostProbeError !== ""
-          text: root.hostProbeError
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
       }
 
       // Fixed-height popup: the card is always Style.space(560) tall (see
@@ -1624,8 +1278,9 @@ Panel {
       // popup), and Models takes whatever is left between the pinned header
       // and it. contentHolder in KeyboardPanel.qml doesn't clip its children,
       // so both slots clip themselves.
-      Flickable {
+      ModelsList {
         id: modelsFlick
+        root: root
         visible: !root.hostTrustPromptActive
         anchors.top: modelsHeaderRow.bottom
         anchors.topMargin: Style.space(10)
@@ -1633,593 +1288,24 @@ Panel {
         anchors.right: parent.right
         anchors.bottom: bottomBlock.top
         anchors.bottomMargin: Style.space(10)
-        contentWidth: width
-        contentHeight: modelsColumn.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-        // Plain Flickable only grabs the wheel when it's actually scrollable
-        // (interactive above) and stops grabbing it once scrolled to its own
-        // top/bottom edge. Trapping the wheel here unconditionally - whether
-        // or not there's anything left to scroll - keeps a stray wheel event
-        // over this list from leaking anywhere else, which matters more now
-        // that these two lists are the only things that scroll at all.
-        WheelHandler {
-          target: null
-          onWheel: (event) => {
-            var maxY = Math.max(0, modelsFlick.contentHeight - modelsFlick.height)
-            modelsFlick.contentY = Math.max(0, Math.min(maxY, modelsFlick.contentY - event.angleDelta.y))
-            event.accepted = true
-          }
-        }
-
-        Column {
-          id: modelsColumn
-          width: modelsFlick.width
-          spacing: Style.space(10)
-
-          // Named model sets from registry.json's "groups" - one click to
-          // bring up a whole working set (see Manager.ensure_group). They
-          // share this list (and its filter) with the models rather than
-          // living in their own section, and the "GRP:" prefix is what
-          // tells them apart from the gpu_group headers below - which are a
-          // different concept entirely (which models contend for which
-          // physical GPU) that happens to share the word "group".
-          Repeater {
-            model: root.filteredGroups
-
-            delegate: Column {
-              id: groupEntry
-              width: modelsColumn.width
-              spacing: Style.space(4)
-
-              readonly property var st: root.groupState(modelData)
-              readonly property bool allUp: st.total > 0 && st.active === st.total
-              readonly property bool starting: groupEnsureProc.running && groupEnsureProc.pendingName === modelData.name
-              readonly property bool stopping: groupStopProc.running && groupStopProc.pendingName === modelData.name
-
-              Row {
-                width: parent.width
-                spacing: Style.space(8)
-
-                Rectangle {
-                  width: Style.space(8)
-                  height: Style.space(8)
-                  radius: width / 2
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: root.groupStatusColor(groupEntry.st)
-                }
-
-                Text {
-                  textFormat: Text.PlainText
-                  width: parent.width - groupActionBtn.implicitWidth - Style.space(24)
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "GRP:" + modelData.name
-                  color: root.bar ? root.bar.foreground : Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                  elide: Text.ElideRight
-                }
-
-                // One toggle button, same as a single model's row: "Stop"
-                // once every member is up, "Ensure" otherwise (brings up
-                // whatever's missing) - same best-effort-per-member
-                // ensure_group()/group-stop semantics either way, just one
-                // button standing in for "the group's not fully up yet" vs.
-                // "it is."
-                Button {
-                  id: groupActionBtn
-                  text: groupEntry.starting ? "Starting..." : (groupEntry.stopping ? "Stopping..." : (groupEntry.allUp ? "Stop" : "Ensure"))
-                  enabled: !groupEnsureProc.running && !groupStopProc.running
-                  foreground: enabled ? Color.foreground : Color.muted
-                  bordered: true
-                  onClicked: groupEntry.allUp ? root.stopGroup(modelData.name) : root.ensureGroup(modelData.name)
-                }
-              }
-
-              // Members, indented under their group, so a group isn't an
-              // opaque name you have to go read registry.json to decode.
-              // Flow wraps rather than eliding - a group with six members
-              // shouldn't hide five of them.
-              Flow {
-                x: Style.space(16)
-                width: parent.width - Style.space(16)
-                spacing: Style.space(10)
-
-                Repeater {
-                  model: modelData.models
-
-                  delegate: Row {
-                    spacing: Style.space(4)
-
-                    Rectangle {
-                      width: Style.space(6)
-                      height: Style.space(6)
-                      radius: width / 2
-                      anchors.verticalCenter: parent.verticalCenter
-                      // modelData here is the member's name (a string) - the
-                      // inner Repeater shadows the group delegate's modelData.
-                      color: root.memberStatusColor(modelData)
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      text: root.memberLabel(modelData)
-                      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          Repeater {
-            model: root.filteredGroupedModels
-            delegate: Column {
-              width: modelsColumn.width
-              spacing: Style.space(4)
-
-              PanelSectionHeader { text: modelData.group }
-
-              Repeater {
-                model: modelData.models
-                delegate: Item {
-                  width: modelsColumn.width
-                  implicitHeight: modelRow.implicitHeight
-
-                  Row {
-                    id: modelRow
-                    width: parent.width
-                    spacing: Style.space(8)
-
-                    Rectangle {
-                      width: Style.space(8)
-                      height: Style.space(8)
-                      radius: width / 2
-                      anchors.verticalCenter: parent.verticalCenter
-                      color: root.statusColor(modelData)
-                    }
-
-                    Column {
-                      width: parent.width - ensureBtn.implicitWidth - logsBtn.implicitWidth - Style.space(80)
-                      Text {
-                        text: modelData.name + (modelData.pinned ? "  • pinned" : "")
-                        color: root.bar ? root.bar.foreground : Color.foreground
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.body
-                        elide: Text.ElideRight
-                        width: parent.width
-                      }
-                      Text {
-                        visible: modelData.active
-                        text: modelData.active ? (modelData.candidate.engine + " @ " + modelData.candidate.host + ":" + modelData.candidate.port) : ""
-                        color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                        width: parent.width
-                      }
-                    }
-
-                    Button {
-                      id: logsBtn
-                      text: "Logs"
-                      bordered: true
-                      onClicked: root.openLogTerminal(modelData.name)
-                    }
-
-                    Button {
-                      id: ensureBtn
-                      // A start can take a while (model load, or an SSH
-                      // round-trip to a remote box), and modelData.active
-                      // only flips once the CLI returns and refresh() lands
-                      // - so the button used to sit there still saying
-                      // "Ensure" the whole time, looking like the click did
-                      // nothing, before abruptly becoming "Stop".
-                      readonly property bool starting: ensureProc.running && ensureProc.pendingName === modelData.name
-                      text: starting ? "Starting..." : (modelData.active ? "Stop" : "Ensure")
-                      // ensure() drops a second call while one is in flight,
-                      // so every other inactive model's button is a dead
-                      // click too until this one finishes - telling the same
-                      // lie we're fixing here. Stop stays live throughout:
-                      // it runs on its own process, independent of this one.
-                      enabled: !(ensureProc.running && !modelData.active)
-                      foreground: enabled ? Color.foreground : Color.muted
-                      bordered: true
-                      onClicked: modelData.active ? root.stopModel(modelData.name) : root.ensure(modelData.name)
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
       }
 
       // Everything that lives below the model list, pinned to the bottom of
       // the card so Models can fill the gap above it. Messages come first so
       // an error never gets pushed off-card by a tall Stats section.
-      Column {
+      BottomPanel {
         id: bottomBlock
+        root: root
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        spacing: Style.space(10)
-
-        Text {
-          visible: root.actionError !== ""
-          text: root.actionError
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        Text {
-          visible: root.registryError !== ""
-          text: "registry.json failed to reload: " + root.registryError
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        // Shown whenever the backend is down, or the registry is still the
-        // untouched clean default (independent conditions - OR, not AND -
-        // so this survives the backend coming up if nobody's described a
-        // model yet). Reads top to bottom on purpose: status, then what
-        // the button will actually do, then the skill choice to make
-        // *before* clicking it, then the button itself last.
-        //
-        // Gated on activeHost === "" too: setup.sh/skill-linking/Ollama
-        // registration all act on *this* machine's own install - none of
-        // that is the right response to a remote peer being unreachable or
-        // never having had a model registered, so none of it should show
-        // while targeting one.
-        Column {
-          visible: root.activeHost === "" && (root.backendUnreachable || root.registryIsDefault)
-          width: parent.width
-          spacing: Style.space(6)
-
-          Text {
-            text: root.backendUnreachable ? "Backend not running." : "No model configured yet."
-            color: root.backendUnreachable ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
-            font.bold: true
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            visible: root.backendUnreachable && root.setupResult !== "ok"
-            text: "Builds the backend, generates a token/TLS cert, and starts it as a"
-              + " systemd service (no custom listen port here - run"
-              + " ./scripts/setup.sh yourself in a terminal for that)."
-            color: root.bar ? root.bar.foreground : Color.foreground
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Column {
-            visible: root.registryIsDefault && root.skillLinkResult === ""
-            width: parent.width
-            spacing: Style.space(2)
-
-            Text {
-              text: "Also point a coding agent at skills/modelmanager/SKILL.md so it"
-                + " can set up your first model - check which one(s) before clicking"
-                + " below (or leave both unchecked and edit "
-                + root.registryJsonPath + " yourself):"
-              color: root.bar ? root.bar.foreground : Color.foreground
-              wrapMode: Text.Wrap
-              width: parent.width
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-            Row {
-              spacing: Style.space(8)
-              Button {
-                text: (root.linkClaudeChecked ? "☑ " : "☐ ") + "Claude Code"
-                foreground: root.linkClaudeChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-                bordered: true
-                onClicked: root.linkClaudeChecked = !root.linkClaudeChecked
-              }
-              Button {
-                text: (root.linkCodexChecked ? "☑ " : "☐ ") + "Codex"
-                foreground: root.linkCodexChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-                bordered: true
-                onClicked: root.linkCodexChecked = !root.linkCodexChecked
-              }
-            }
-          }
-
-          Column {
-            visible: root.registryIsDefault && root.ollamaRegisterResult === ""
-            width: parent.width
-            spacing: Style.space(2)
-
-            Text {
-              text: "Already running Ollama with a model pulled? Register one for a"
-                + " quick first test - doesn't download anything, just points at"
-                + " whichever model Ollama already has:"
-              color: root.bar ? root.bar.foreground : Color.foreground
-              wrapMode: Text.Wrap
-              width: parent.width
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-            Row {
-              spacing: Style.space(8)
-              Button {
-                text: (root.registerOllamaChecked ? "☑ " : "☐ ") + "Register an existing Ollama model"
-                foreground: root.registerOllamaChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-                bordered: true
-                onClicked: root.registerOllamaChecked = !root.registerOllamaChecked
-              }
-            }
-          }
-
-          Row {
-            spacing: Style.space(8)
-
-            Button {
-              text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
-                : root.ollamaRegisterRunning ? "Registering..."
-                : (root.backendUnreachable ? "Run setup now" : "Apply")
-              enabled: !root.setupRunning && !root.skillLinkRunning && !root.ollamaRegisterRunning
-              bordered: true
-              visible: root.setupResult !== "ok" || (root.registryIsDefault
-                && (root.skillLinkResult === "" || root.ollamaRegisterResult === ""))
-              onClicked: root.startSetupAction()
-            }
-          }
-
-          Text {
-            visible: root.setupRunning && root.setupLiveOutput !== ""
-            text: root.setupLiveOutput
-            color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          Text {
-            visible: root.setupResult !== "" && root.setupResult !== "ok"
-            text: root.setupResult
-            color: Color.urgent
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          Text {
-            visible: root.skillLinkResult !== "" && root.skillLinkResult !== "skipped"
-            text: root.skillLinkResult
-            color: root.skillLinkResult.indexOf("failed") !== -1
-              ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          Text {
-            visible: root.ollamaRegisterResult !== "" && root.ollamaRegisterResult !== "skipped"
-            text: root.ollamaRegisterResult
-            color: (root.ollamaRegisterResult.indexOf("failed") !== -1 || root.ollamaRegisterResult.indexOf("No Ollama") !== -1)
-              ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            visible: root.backendUnreachable
-            text: "(" + root.lastError + ")"
-            color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-            wrapMode: Text.Wrap
-            width: parent.width
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-        }
-
-        Text {
-          visible: root.lastError !== "" && !root.backendUnreachable && root.activeHost === ""
-          text: root.lastError
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        // Remote-target errors get their own always-shown line (unlike the
-        // local-only cases above, which route through the first-run setup
-        // block or the plain lastError text above) - a remote peer being
-        // unreachable or refusing a request (e.g. a grant missing that
-        // system) is never "run setup.sh", so none of that gating applies.
-        Text {
-          visible: root.activeHost !== "" && root.lastError !== ""
-          text: "Peer '" + root.activeHost + "': " + root.lastError
-          color: Color.urgent
-          wrapMode: Text.Wrap
-          width: parent.width
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        // Hidden entirely while a host trust decision is pending (see
-        // hostTrustBlock above) - a Column positioner skips invisible
-        // children when sizing itself, so bottomBlock shrinks to just
-        // whatever error/trust text is showing instead of leaving this
-        // stale behind it.
-        Column {
-          visible: !root.hostTrustPromptActive
-          width: parent.width
-          spacing: Style.space(10)
-
-        PanelSeparator {}
-        PanelSectionHeader { text: "Stats" }
-
-        Flickable {
-          id: statsFlick
-          width: parent.width
-          height: Math.min(Style.space(240), contentHeight)
-          contentWidth: width
-          contentHeight: statsColumn.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          // Same wheel trap as modelsFlick above - see its comment.
-          WheelHandler {
-            target: null
-            onWheel: (event) => {
-              var maxY = Math.max(0, statsFlick.contentHeight - statsFlick.height)
-              statsFlick.contentY = Math.max(0, Math.min(maxY, statsFlick.contentY - event.angleDelta.y))
-              event.accepted = true
-            }
-          }
-
-          Column {
-            id: statsColumn
-            width: statsFlick.width
-            spacing: Style.space(10)
-
-            Repeater {
-              model: root.filteredSystemNames
-              delegate: Column {
-                width: statsColumn.width
-                spacing: Style.space(4)
-
-                Text {
-                  text: modelData + (
-                    root.activeModelsBySystem[modelData] && root.activeModelsBySystem[modelData].length > 0
-                      ? "  (" + root.activeModelsBySystem[modelData].join(", ") + ")"
-                      : ""
-                  )
-                  color: root.bar ? root.bar.foreground : Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                  elide: Text.ElideRight
-                  width: parent.width
-                }
-
-                Repeater {
-                  model: (root.systemStats[modelData] && root.systemStats[modelData].gpus) || []
-                  delegate: Column {
-                    width: parent.width
-                    spacing: Style.space(2)
-
-                    Text {
-                      text: (modelData.name || "GPU") + " (#" + modelData.index + ")"
-                      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.1)
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    Rectangle {
-                      width: parent.width
-                      height: Style.space(6)
-                      radius: height / 2
-                      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 2.2)
-
-                      Rectangle {
-                        width: parent.width * root.vramPct(modelData)
-                        height: parent.height
-                        radius: height / 2
-                        color: Color.accent
-                      }
-                    }
-
-                    Text {
-                      text: "VRAM " + modelData.memory_used_mb + " / " + modelData.memory_total_mb + " MB ("
-                        + Math.round(root.vramPct(modelData) * 100) + "%)   Util " + modelData.utilization_pct
-                        + "%   " + modelData.temperature_c + "°C"
-                      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-                  }
-                }
-
-                Text {
-                  visible: !(root.systemStats[modelData] && root.systemStats[modelData].gpus)
-                  text: (root.systemStats[modelData] && root.systemStats[modelData].error) || "loading..."
-                  color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.Wrap
-                  width: parent.width
-                }
-              }
-            }
-          }
-        }
-        }
       }
     }
   }
 
-  // Small self-dismissing toast confirming a registry.json reload actually
-  // happened, independent of whether the panel above is open - this is the
-  // whole point, since you're watching the *file*, not necessarily the bar
-  // popup, while hand-editing it. A dedicated layer-shell surface (like
-  // omarchy-shell's own OSD) rather than routing through that shared OSD
-  // singleton, so this plugin doesn't have to reach into shell-owned state
-  // for something purely its own.
-  PanelWindow {
+  // See components/Toast.qml for what this actually shows.
+  Toast {
     id: toastWindow
-    visible: root.toastVisible
-    anchors { top: true; bottom: true; left: true; right: true }
-    color: "transparent"
-    WlrLayershell.namespace: "modelmanager-toast"
-    WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-    exclusionMode: ExclusionMode.Ignore
-    // Visual-only surface: keep the layer-shell input region empty so the
-    // toast never blocks clicks to the bar/desktop below it.
-    mask: Region {}
-
-    BorderSurface {
-      id: toastCard
-      anchors.top: parent.top
-      anchors.right: parent.right
-      anchors.topMargin: Style.bar.sizeHorizontal + Style.space(8)
-      anchors.rightMargin: Style.space(8)
-      width: toastLabel.implicitWidth + Style.space(28)
-      height: toastLabel.implicitHeight + Style.space(16)
-      color: Util.alpha(Color.background, 0.97)
-      borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
-      radius: Style.cornerRadius
-
-      Text {
-        id: toastLabel
-        anchors.centerIn: parent
-        text: root.toastText
-        color: Color.popups.text
-        font.family: Style.font.family
-        font.pixelSize: Style.font.body
-      }
-    }
+    root: root
   }
 }
