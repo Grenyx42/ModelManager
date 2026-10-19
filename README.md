@@ -1,11 +1,20 @@
 # ModelManager
 
-ModelManager tracks which LLM models are actually running, on which of your
+ModelManager tracks which LLM models are actually running, on which
 machines, and starts/stops/swaps them on request - so an app (or you) can
 ask for a model by name (`"qwen-72b"`) and get back a live `host:port` to
 talk to, without caring whether it's already loaded, which box it's on, or
 what has to be evicted first to make room. An Omarchy bar plugin sits on top
 of the same REST API for a point-and-click view of what's running.
+
+It works solo - a handful of your own GPU boxes (Linux, Windows), each
+running one or more LLM engines (Ollama, custom llama.cpp builds) - and it
+works shared: grant someone else on your Tailscale tailnet or LAN scoped,
+revocable access to specific systems, and they manage models on your
+hardware (or you on theirs) from their own panel or CLI, without either
+side touching the other's registry. Running your own fleet and pooling
+GPU capacity with people you trust are both first-class here, not a
+bolt-on - see [Sharing access with another person](docs/deployment.md#sharing-access-with-another-person).
 
 It grew out of my own home-lab setup: a handful of GPU boxes (Linux,
 Windows), each able to run one or more LLM engines (Ollama, custom llama.cpp
@@ -38,6 +47,12 @@ which box happens to have `qwen-72b` loaded this week.
   (Quickshell/Hyprland), but the coordinator + CLI underneath it are plain
   Python and work fine headless, without Omarchy, on Linux or as the
   controlling side of a Windows box over SSH.
+- Works equally well solo (one coordinator, one owner token, your machines
+  only) or shared with other people - `modelmanager grant` hands out
+  scoped, revocable access to specific systems, and `modelmanager hosts` /
+  the panel's "Coordinator" field let someone point at *your* coordinator
+  the same way you'd point at your own. See [Sharing access with another
+  person](docs/deployment.md#sharing-access-with-another-person).
 
 ```
 Apps, or the Omarchy bar plugin

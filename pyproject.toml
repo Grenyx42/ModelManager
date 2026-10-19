@@ -1,7 +1,7 @@
 [project]
 name = "modelmanager"
 version = "0.1.0"
-description = "Coordinator for LLM inference engines (Ollama, llama.cpp) across multiple GPU machines"
+description = "Coordinator for LLM inference engines (Ollama, llama.cpp) across your GPU machines - run solo, or share scoped access with other people's machines over Tailscale/LAN"
 readme = "README.md"
 license = "MIT"
 authors = [
