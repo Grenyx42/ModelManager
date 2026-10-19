@@ -33,28 +33,39 @@ first-class feature, not an afterthought.
 confirms it answers "can I share this with a friend?" in the first few
 lines without needing to hunt for the grants/hosts docs.
 
-## Phase 2 - `cli.py` onto a real argument-parsing library (DHH #2)
+## Phase 2 - `cli.py` onto a real argument-parsing library (DHH #2) - DONE 2026-10-19
 
-1000+ lines of hand-rolled `argparse` wiring in `modelmanager/cli.py`. Move
-it onto a proper library (Click or Typer - pick one, Typer gives type-hint-
-driven parsing which fits this codebase's style better) instead of continuing
-to hand-build subcommand dispatch.
+1000+ lines of hand-rolled `argparse` wiring in `modelmanager/cli.py`. Moved
+it onto Click.
 
-- [ ] Pick Click vs Typer and note the choice (and why) in `CONTRIBUTING.md`.
-- [ ] Migrate command-by-command (`auth`, `grant`, `hosts`, `stats`, model/
+- [x] Picked Click over Typer - already a transitive dependency (via
+      `uvicorn`), no type-hint-driven magic to get wrong, and its explicit
+      decorator style matches this codebase's existing style better. Noted
+      in `CONTRIBUTING.md`.
+- [x] Migrated every command (`auth`, `grant`, `hosts`, `stats`, model/
       system/engine/gpu_group/group CRUD, `ensure`/`stop`/`logs`/`log-path`,
-      etc.), preserving every existing flag name and behavior exactly -
-      this is a mechanical port, not a redesign.
-- [ ] Keep the existing local-file-only bypass pattern for `grant`/`hosts`/
-      `auth` (they don't go through `_client()`) - don't let the new
-      library's conventions quietly change that.
-- [ ] Update `docs/cli-reference.md` if any help text/flag presentation
-      changes as a side effect of the new library.
+      etc.) - same flag names, same `cmd_*` functions untouched, each Click
+      command just builds the same kind of `SimpleNamespace` argparse used
+      to hand them and calls through.
+- [x] Kept the local-file-only bypass pattern for `grant`/`hosts`/`auth`
+      (still never go through `_client()`).
+- [x] `docs/cli-reference.md` needed no changes - every flag/positional
+      shape is identical; only `--help`'s own formatting changed (Click's
+      own style), which isn't documented there.
+- [x] Added `click>=8.1` as an explicit dependency (`pyproject.toml`) and
+      regenerated `requirements.lock` - a one-line diff (click gained a
+      direct `via` entry, no version changes), verified installable with
+      `--require-hashes` in a clean venv.
 
-**Resolve/test:** full `pytest` pass, plus a manual run-through of every
-subcommand in `docs/cli-reference.md` against a scratch coordinator,
-confirming output shape (especially JSON output used by Panel.qml's
-`Process` calls) is byte-for-byte unchanged where the panel depends on it.
+**Resolve/test:** full `pytest` pass (249 passed); manual run-through of
+`serve`, `list`/`systems`/`groups`/`config`/`doctor`/`stats`/`version`,
+`ensure`/`stop`/`logs`/`log-path` against missing models (clean 404 JSON),
+`put` (both a validation error and a success), `grant add/allow/list/revoke/
+remove` against a scratch registry, `hosts probe/add --yes/list/touch/
+remove`, and `--peer <name>` actually reaching the scratch coordinator -
+all against a disposable scratch coordinator/registry, never the real one.
+Also confirmed the coordinator-unreachable path still prints the same clean
+JSON error line (hit it by accident via a cert mismatch in the test setup).
 
 ## Phase 3 - Split `Panel.qml` into modules (DHH #3)
 

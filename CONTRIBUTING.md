@@ -78,6 +78,17 @@ any change there should come with tests. `modelmanager/cli.py` is a thin
 `tests/` - it's verified by hand against a running coordinator. If you're
 changing CLI output formatting, describe how you tested it manually in the PR.
 
+**Argument parsing uses [Click](https://click.palletsprojects.com/).** Picked
+over Typer because it was already a transitive dependency (via `uvicorn`),
+needs no type-hint-driven magic to get right, and its explicit
+`@click.option`/`@click.argument` decorators match this codebase's existing
+style of being explicit rather than clever. Global flags (`--url`, `--token`,
+`--peer`) live on the root `cli` group and flow into every command via
+`ctx.obj`; each command builds a `SimpleNamespace` from that plus its own
+parsed arguments and hands it to the matching `cmd_*` function - so the
+`cmd_*` functions themselves stay framework-agnostic and still take a single
+`args`-like object, same as when they were argparse `Namespace`s.
+
 The Omarchy plugin (`manifest.json`, `Panel.qml`) has no automated tests - it
 shells out to the CLI and renders QML, neither of which is practical to unit
 test here. Describe what you clicked and what you expected to see.

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
 import ssl
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
+import click
 import httpx
 from pydantic import ValidationError
 
@@ -815,228 +816,354 @@ def cmd_put(args) -> int:
         return _print_response(client.post(f"/v1/{args.resource}/{args.name}", json=data))
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="modelmanager")
-    parser.add_argument("--url", default=DEFAULT_URL, help="coordinator base URL")
-    parser.add_argument(
-        "--token", default=None,
-        help="bearer token for the coordinator's REST API (defaults to MODELMANAGER_TOKEN env, then the token file - see `modelmanager auth show`)",
-    )
-    parser.add_argument(
-        "--peer", default=None,
-        help="target a remote coordinator by name instead of --url/--token's defaults - "
-             "one already trusted via `modelmanager hosts add <name> <url>`",
-    )
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    p_serve = sub.add_parser("serve", help="run the coordinator REST service")
-    p_serve.add_argument("--host", default=DEFAULT_SERVE_HOST, help="defaults to MODELMANAGER_HOST env, else 0.0.0.0")
-    p_serve.add_argument("--port", type=int, default=DEFAULT_SERVE_PORT, help="defaults to MODELMANAGER_PORT env, else 8778")
-    p_serve.add_argument("--reload", action="store_true")
-    p_serve.set_defaults(func=cmd_serve)
-
-    p_list = sub.add_parser("list", help="list model definitions and status")
-    p_list.add_argument("--pretty", "-p", action="store_true", help="grouped, colored view instead of raw JSON")
-    p_list.set_defaults(func=cmd_list)
-    sub.add_parser("summary", help="compact running-model summary").set_defaults(func=cmd_summary)
-    sub.add_parser("systems", help="list configured systems").set_defaults(func=cmd_systems)
-
-    p_ensure = sub.add_parser(
-        "ensure", help="ensure a model is loaded (no usage lease); a group name ensures every member, best-effort"
-    )
-    p_ensure.add_argument("name")
-    p_ensure.add_argument(
-        "--dry-run", action="store_true", help="show what ensure would do (keep/start/swap/blocked) without doing it"
-    )
-    p_ensure.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON (only affects --dry-run)")
-    p_ensure.set_defaults(func=cmd_ensure)
-
-    p_verify = sub.add_parser(
-        "verify",
-        help="ensure a model is loaded and push a real inference request at it, report ok/latency; "
-        "a group name verifies every member, best-effort",
-    )
-    p_verify.add_argument("name")
-    p_verify.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for the test request")
-    p_verify.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
-    p_verify.set_defaults(func=cmd_verify)
-
-    p_acquire = sub.add_parser(
-        "acquire", help="load a model and take a usage lease on it, so it can't be evicted/swapped while held"
-    )
-    p_acquire.add_argument("name")
-    p_acquire.add_argument("--ttl", type=float, default=None, help="lease lifetime in seconds (default 300)")
-    p_acquire.set_defaults(func=cmd_acquire)
-
-    p_release = sub.add_parser("release", help="release a usage lease taken with `acquire`")
-    p_release.add_argument("name")
-    p_release.add_argument("--lease-id", default=None, help="omit to release all leases on this model")
-    p_release.set_defaults(func=cmd_release)
-
-    p_stop = sub.add_parser(
-        "stop", help="stop a running model; a group name stops every member, best-effort"
-    )
-    p_stop.add_argument("name")
-    p_stop.add_argument("--force", action="store_true", help="stop even if a usage lease is held")
-    p_stop.set_defaults(func=cmd_stop)
-
-    sub.add_parser("groups", help="list configured model groups").set_defaults(func=cmd_groups)
-
-    p_group_ensure = sub.add_parser(
-        "group-ensure", help="best-effort: ensure every model in a group is loaded"
-    )
-    p_group_ensure.add_argument("name")
-    p_group_ensure.set_defaults(func=cmd_group_ensure)
-
-    p_group_verify = sub.add_parser(
-        "group-verify", help="best-effort: verify every model in a group"
-    )
-    p_group_verify.add_argument("name")
-    p_group_verify.add_argument("--timeout", type=float, default=30.0, help="seconds to wait per model's test request")
-    p_group_verify.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
-    p_group_verify.set_defaults(func=cmd_group_verify)
-
-    p_group_stop = sub.add_parser("group-stop", help="best-effort: stop every model in a group")
-    p_group_stop.add_argument("name")
-    p_group_stop.add_argument("--force", action="store_true", help="stop even if a usage lease is held")
-    p_group_stop.set_defaults(func=cmd_group_stop)
-
-    p_group_stats = sub.add_parser("group-stats", help="GPU/VRAM stats for every system behind a group's models")
-    p_group_stats.add_argument("name")
-    p_group_stats.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
-    p_group_stats.set_defaults(func=cmd_group_stats)
-
-    p_logs = sub.add_parser("logs", help="show recent logs for a model")
-    p_logs.add_argument("name")
-    p_logs.add_argument("--lines", type=int, default=200)
-    p_logs.add_argument("--follow", "-f", action="store_true", help="live-tail the model's actual log file(s)")
-    p_logs.set_defaults(func=cmd_logs)
-
-    p_log_path = sub.add_parser(
-        "log-path", help="where a model's logs actually live (system/control/os/ssh_host/path), for tailing directly"
-    )
-    p_log_path.add_argument("name")
-    p_log_path.set_defaults(func=cmd_log_path)
-
-    p_stats = sub.add_parser(
-        "stats", help="show GPU/VRAM stats for a system, a group's systems, or (omitted) every system in one call"
-    )
-    p_stats.add_argument("system", nargs="?", default=None)
-    p_stats.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
-    p_stats.set_defaults(func=cmd_stats)
-
-    p_access_log = sub.add_parser("access-log", help="show recent REST requests (method, path, status, duration)")
-    p_access_log.add_argument("--lines", type=int, default=200)
-    p_access_log.set_defaults(func=cmd_access_log)
-
-    p_lifecycle_log = sub.add_parser(
-        "lifecycle-log", help="show recent model crash/restart events, across every model"
-    )
-    p_lifecycle_log.add_argument("--lines", type=int, default=200)
-    p_lifecycle_log.set_defaults(func=cmd_lifecycle_log)
-
-    sub.add_parser("help", help="show the registry schema and API reference").set_defaults(func=cmd_help)
-    sub.add_parser("version", help="show the API/wire-contract version").set_defaults(func=cmd_version)
-
-    p_doctor = sub.add_parser(
-        "doctor", help="health check: system reachability, plus a dry-run of every model (files present, what ensure would do)"
-    )
-    p_doctor.add_argument("--pretty", "-p", action="store_true", help="human-readable view instead of raw JSON")
-    p_doctor.set_defaults(func=cmd_doctor)
-
-    p_validate = sub.add_parser(
-        "validate", help="validate a full registry document without applying it (e.g. before saving over registry.json)"
-    )
-    p_validate.add_argument("json", help="JSON body, or @path/to/registry.json")
-    p_validate.set_defaults(func=cmd_validate)
-
-    sub.add_parser("config", help="show the full current registry").set_defaults(func=cmd_config)
-    sub.add_parser(
-        "reload", help="re-read registry.json from disk and apply it live (e.g. after hand-editing a delete)"
-    ).set_defaults(func=cmd_reload)
-    sub.add_parser(
-        "reload-status", help="reload_count/last_reload_at, for detecting a reload happened without diffing the registry"
-    ).set_defaults(func=cmd_reload_status)
-
-    p_deploy = sub.add_parser(
-        "deploy-agent",
-        help="upload scripts/windows/agent.ps1 to windows/ssh systems if it changed (also runs on coordinator startup)",
-    )
-    p_deploy.add_argument("system", nargs="?", default=None, help="omit to deploy to every windows/ssh system")
-    p_deploy.add_argument("--force", action="store_true", help="re-upload even if unchanged")
-    p_deploy.set_defaults(func=cmd_deploy_agent)
-
-    p_put = sub.add_parser("put", help="create or update a systems/engines/gpu_groups/models entry")
-    p_put.add_argument("resource", choices=["systems", "engines", "gpu_groups", "models", "groups"])
-    p_put.add_argument("name")
-    p_put.add_argument("json", help="JSON body, or @path/to/file.json")
-    p_put.set_defaults(func=cmd_put)
-
-    p_auth = sub.add_parser(
-        "auth", help="manage the local REST API bearer token (reads/writes the token file directly - no coordinator needed)"
-    )
-    p_auth.add_argument("action", choices=["show", "rotate"])
-    p_auth.set_defaults(func=cmd_auth)
-
-    p_grant = sub.add_parser(
-        "grant", help="manage scoped access for other people (reads/writes grants.json directly - no coordinator needed)"
-    )
-    grant_sub = p_grant.add_subparsers(dest="grant_action", required=True)
-    p_grant_add = grant_sub.add_parser(
-        "add", help="register (or re-register) a token someone shared with you under a name - no system access yet"
-    )
-    p_grant_add.add_argument("name", help="a label for this person/credential, e.g. 'bob'")
-    p_grant_add.add_argument("token", help="the token they generated locally and shared with you")
-    p_grant_add.set_defaults(func=cmd_grant)
-    p_grant_list = grant_sub.add_parser("list", help="list grants (never shows tokens)")
-    p_grant_list.set_defaults(func=cmd_grant)
-    p_grant_remove = grant_sub.add_parser("remove", help="delete a grant entirely by name (identity, token, and all system access)")
-    p_grant_remove.add_argument("name")
-    p_grant_remove.set_defaults(func=cmd_grant)
-    p_grant_allow = grant_sub.add_parser("allow", help="give an existing grant access to one more system")
-    p_grant_allow.add_argument("name", help="an existing grant's name (see `grant add`)")
-    p_grant_allow.add_argument("system", help="a system name from your registry.json")
-    p_grant_allow.set_defaults(func=cmd_grant)
-    p_grant_revoke = grant_sub.add_parser("revoke", help="take away an existing grant's access to one system")
-    p_grant_revoke.add_argument("name", help="an existing grant's name (see `grant add`)")
-    p_grant_revoke.add_argument("system")
-    p_grant_revoke.set_defaults(func=cmd_grant)
-
-    p_hosts = sub.add_parser(
-        "hosts",
-        help="manage trusted remote coordinators by name - trust-on-first-connect "
-             "(reads/writes known_hosts.json directly - no coordinator needed)",
-    )
-    hosts_sub = p_hosts.add_subparsers(dest="hosts_action", required=True)
-    p_hosts_probe = hosts_sub.add_parser("probe", help="fetch a coordinator's cert fingerprint without trusting it")
-    p_hosts_probe.add_argument("url", help="e.g. https://systemA:8778")
-    p_hosts_probe.set_defaults(func=cmd_hosts)
-    p_hosts_add = hosts_sub.add_parser("add", help="trust a coordinator's cert and save it under a name")
-    p_hosts_add.add_argument("name", help="a label for this coordinator, e.g. 'alice'")
-    p_hosts_add.add_argument("url", help="e.g. https://systemA:8778")
-    p_hosts_add.add_argument("--yes", action="store_true", help="skip the interactive fingerprint confirmation")
-    p_hosts_add.set_defaults(func=cmd_hosts)
-    p_hosts_list = hosts_sub.add_parser("list", help="list trusted hosts")
-    p_hosts_list.set_defaults(func=cmd_hosts)
-    p_hosts_remove = hosts_sub.add_parser("remove", help="stop trusting a host by name")
-    p_hosts_remove.add_argument("name")
-    p_hosts_remove.set_defaults(func=cmd_hosts)
-    p_hosts_touch = hosts_sub.add_parser(
-        "touch", help="bump a host's last-connected time (used internally when actually switching to it)"
-    )
-    p_hosts_touch.add_argument("name")
-    p_hosts_touch.set_defaults(func=cmd_hosts)
-
-    args = parser.parse_args()
+def _run(ctx: click.Context, fn, **extra) -> None:
+    """Every command below ends with this: build the same kind of Namespace
+    the cmd_* functions above have always expected (global --url/--token/
+    --peer from the root group, plus whatever this command parsed), call it,
+    and exit with its return code. This is Click's equivalent of argparse's
+    single `sys.exit(args.func(args))` dispatch point - kept as one shared
+    helper (rather than inlined per command) so the coordinator-unreachable
+    handling below only has to exist once."""
+    # dict-merge (not double-star-into-call) so a command's own positional/
+    # option wins on a name collision with a global one - `hosts probe
+    # <url>` has its own "url" (the target to probe), distinct from the
+    # global --url (the coordinator base URL), and argparse's single shared
+    # Namespace let the subcommand's own positional win the same way.
+    ns = SimpleNamespace(**{**ctx.obj, **extra})
     try:
-        sys.exit(args.func(args))
+        sys.exit(fn(ns))
     except httpx.HTTPError as exc:
         # Coordinator unreachable/timed out - one clean JSON line instead of
         # a raw traceback, so callers that just JSON.parse our stdout (e.g.
         # the bar-widget plugin) get a usable error instead of a parse failure.
-        target = f"peer {args.peer!r}" if getattr(args, "peer", None) else args.url
+        target = f"peer {ns.peer!r}" if getattr(ns, "peer", None) else ns.url
         print(json.dumps({"error": f"cannot reach coordinator at {target}: {exc}"}))
         sys.exit(1)
+
+
+@click.group()
+@click.option("--url", default=DEFAULT_URL, help="coordinator base URL")
+@click.option(
+    "--token", default=None,
+    help="bearer token for the coordinator's REST API (defaults to MODELMANAGER_TOKEN env, then the token file - see `modelmanager auth show`)",
+)
+@click.option(
+    "--peer", default=None,
+    help="target a remote coordinator by name instead of --url/--token's defaults - "
+         "one already trusted via `modelmanager hosts add <name> <url>`",
+)
+@click.pass_context
+def cli(ctx: click.Context, url: str, token: str | None, peer: str | None) -> None:
+    ctx.obj = {"url": url, "token": token, "peer": peer}
+
+
+@cli.command("serve", help="run the coordinator REST service")
+@click.option("--host", default=DEFAULT_SERVE_HOST, help="defaults to MODELMANAGER_HOST env, else 0.0.0.0")
+@click.option("--port", type=int, default=DEFAULT_SERVE_PORT, help="defaults to MODELMANAGER_PORT env, else 8778")
+@click.option("--reload", is_flag=True)
+@click.pass_context
+def serve(ctx, host, port, reload):
+    _run(ctx, cmd_serve, host=host, port=port, reload=reload)
+
+
+@cli.command("list", help="list model definitions and status")
+@click.option("--pretty", "-p", is_flag=True, help="grouped, colored view instead of raw JSON")
+@click.pass_context
+def list_models(ctx, pretty):
+    _run(ctx, cmd_list, pretty=pretty)
+
+
+@cli.command("summary", help="compact running-model summary")
+@click.pass_context
+def summary(ctx):
+    _run(ctx, cmd_summary)
+
+
+@cli.command("systems", help="list configured systems")
+@click.pass_context
+def systems(ctx):
+    _run(ctx, cmd_systems)
+
+
+@cli.command("ensure", help="ensure a model is loaded (no usage lease); a group name ensures every member, best-effort")
+@click.argument("name")
+@click.option("--dry-run", is_flag=True, help="show what ensure would do (keep/start/swap/blocked) without doing it")
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON (only affects --dry-run)")
+@click.pass_context
+def ensure(ctx, name, dry_run, pretty):
+    _run(ctx, cmd_ensure, name=name, dry_run=dry_run, pretty=pretty)
+
+
+@cli.command(
+    "verify",
+    help="ensure a model is loaded and push a real inference request at it, report ok/latency; "
+         "a group name verifies every member, best-effort",
+)
+@click.argument("name")
+@click.option("--timeout", type=float, default=30.0, help="seconds to wait for the test request")
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON")
+@click.pass_context
+def verify(ctx, name, timeout, pretty):
+    _run(ctx, cmd_verify, name=name, timeout=timeout, pretty=pretty)
+
+
+@cli.command("acquire", help="load a model and take a usage lease on it, so it can't be evicted/swapped while held")
+@click.argument("name")
+@click.option("--ttl", type=float, default=None, help="lease lifetime in seconds (default 300)")
+@click.pass_context
+def acquire(ctx, name, ttl):
+    _run(ctx, cmd_acquire, name=name, ttl=ttl)
+
+
+@cli.command("release", help="release a usage lease taken with `acquire`")
+@click.argument("name")
+@click.option("--lease-id", default=None, help="omit to release all leases on this model")
+@click.pass_context
+def release(ctx, name, lease_id):
+    _run(ctx, cmd_release, name=name, lease_id=lease_id)
+
+
+@cli.command("stop", help="stop a running model; a group name stops every member, best-effort")
+@click.argument("name")
+@click.option("--force", is_flag=True, help="stop even if a usage lease is held")
+@click.pass_context
+def stop(ctx, name, force):
+    _run(ctx, cmd_stop, name=name, force=force)
+
+
+@cli.command("groups", help="list configured model groups")
+@click.pass_context
+def groups(ctx):
+    _run(ctx, cmd_groups)
+
+
+@cli.command("group-ensure", help="best-effort: ensure every model in a group is loaded")
+@click.argument("name")
+@click.pass_context
+def group_ensure(ctx, name):
+    _run(ctx, cmd_group_ensure, name=name)
+
+
+@cli.command("group-verify", help="best-effort: verify every model in a group")
+@click.argument("name")
+@click.option("--timeout", type=float, default=30.0, help="seconds to wait per model's test request")
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON")
+@click.pass_context
+def group_verify(ctx, name, timeout, pretty):
+    _run(ctx, cmd_group_verify, name=name, timeout=timeout, pretty=pretty)
+
+
+@cli.command("group-stop", help="best-effort: stop every model in a group")
+@click.argument("name")
+@click.option("--force", is_flag=True, help="stop even if a usage lease is held")
+@click.pass_context
+def group_stop(ctx, name, force):
+    _run(ctx, cmd_group_stop, name=name, force=force)
+
+
+@cli.command("group-stats", help="GPU/VRAM stats for every system behind a group's models")
+@click.argument("name")
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON")
+@click.pass_context
+def group_stats(ctx, name, pretty):
+    _run(ctx, cmd_group_stats, name=name, pretty=pretty)
+
+
+@cli.command("logs", help="show recent logs for a model")
+@click.argument("name")
+@click.option("--lines", type=int, default=200)
+@click.option("--follow", "-f", is_flag=True, help="live-tail the model's actual log file(s)")
+@click.pass_context
+def logs(ctx, name, lines, follow):
+    _run(ctx, cmd_logs, name=name, lines=lines, follow=follow)
+
+
+@cli.command("log-path", help="where a model's logs actually live (system/control/os/ssh_host/path), for tailing directly")
+@click.argument("name")
+@click.pass_context
+def log_path(ctx, name):
+    _run(ctx, cmd_log_path, name=name)
+
+
+@cli.command("stats", help="show GPU/VRAM stats for a system, a group's systems, or (omitted) every system in one call")
+@click.argument("system", required=False, default=None)
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON")
+@click.pass_context
+def stats(ctx, system, pretty):
+    _run(ctx, cmd_stats, system=system, pretty=pretty)
+
+
+@cli.command("access-log", help="show recent REST requests (method, path, status, duration)")
+@click.option("--lines", type=int, default=200)
+@click.pass_context
+def access_log(ctx, lines):
+    _run(ctx, cmd_access_log, lines=lines)
+
+
+@cli.command("lifecycle-log", help="show recent model crash/restart events, across every model")
+@click.option("--lines", type=int, default=200)
+@click.pass_context
+def lifecycle_log(ctx, lines):
+    _run(ctx, cmd_lifecycle_log, lines=lines)
+
+
+@cli.command("help", help="show the registry schema and API reference")
+@click.pass_context
+def help_cmd(ctx):
+    _run(ctx, cmd_help)
+
+
+@cli.command("version", help="show the API/wire-contract version")
+@click.pass_context
+def version(ctx):
+    _run(ctx, cmd_version)
+
+
+@cli.command("doctor", help="health check: system reachability, plus a dry-run of every model (files present, what ensure would do)")
+@click.option("--pretty", "-p", is_flag=True, help="human-readable view instead of raw JSON")
+@click.pass_context
+def doctor(ctx, pretty):
+    _run(ctx, cmd_doctor, pretty=pretty)
+
+
+@cli.command("validate", help="validate a full registry document without applying it (e.g. before saving over registry.json)")
+@click.argument("json_body", metavar="JSON")
+@click.pass_context
+def validate(ctx, json_body):
+    _run(ctx, cmd_validate, json=json_body)
+
+
+@cli.command("config", help="show the full current registry")
+@click.pass_context
+def config(ctx):
+    _run(ctx, cmd_config)
+
+
+@cli.command("reload", help="re-read registry.json from disk and apply it live (e.g. after hand-editing a delete)")
+@click.pass_context
+def reload(ctx):
+    _run(ctx, cmd_reload)
+
+
+@cli.command("reload-status", help="reload_count/last_reload_at, for detecting a reload happened without diffing the registry")
+@click.pass_context
+def reload_status(ctx):
+    _run(ctx, cmd_reload_status)
+
+
+@cli.command("deploy-agent", help="upload scripts/windows/agent.ps1 to windows/ssh systems if it changed (also runs on coordinator startup)")
+@click.argument("system", required=False, default=None)
+@click.option("--force", is_flag=True, help="re-upload even if unchanged")
+@click.pass_context
+def deploy_agent(ctx, system, force):
+    _run(ctx, cmd_deploy_agent, system=system, force=force)
+
+
+@cli.command("put", help="create or update a systems/engines/gpu_groups/models entry")
+@click.argument("resource", type=click.Choice(["systems", "engines", "gpu_groups", "models", "groups"]))
+@click.argument("name")
+@click.argument("json_body", metavar="JSON")
+@click.pass_context
+def put(ctx, resource, name, json_body):
+    _run(ctx, cmd_put, resource=resource, name=name, json=json_body)
+
+
+@cli.command("auth", help="manage the local REST API bearer token (reads/writes the token file directly - no coordinator needed)")
+@click.argument("action", type=click.Choice(["show", "rotate"]))
+@click.pass_context
+def auth_cmd(ctx, action):
+    _run(ctx, cmd_auth, action=action)
+
+
+@cli.group("grant", help="manage scoped access for other people (reads/writes grants.json directly - no coordinator needed)")
+def grant_group():
+    pass
+
+
+@grant_group.command("add", help="register (or re-register) a token someone shared with you under a name - no system access yet")
+@click.argument("name")
+@click.argument("token")
+@click.pass_context
+def grant_add(ctx, name, token):
+    _run(ctx, cmd_grant, grant_action="add", name=name, token=token)
+
+
+@grant_group.command("list", help="list grants (never shows tokens)")
+@click.pass_context
+def grant_list(ctx):
+    _run(ctx, cmd_grant, grant_action="list")
+
+
+@grant_group.command("remove", help="delete a grant entirely by name (identity, token, and all system access)")
+@click.argument("name")
+@click.pass_context
+def grant_remove(ctx, name):
+    _run(ctx, cmd_grant, grant_action="remove", name=name)
+
+
+@grant_group.command("allow", help="give an existing grant access to one more system")
+@click.argument("name")
+@click.argument("system")
+@click.pass_context
+def grant_allow(ctx, name, system):
+    _run(ctx, cmd_grant, grant_action="allow", name=name, system=system)
+
+
+@grant_group.command("revoke", help="take away an existing grant's access to one system")
+@click.argument("name")
+@click.argument("system")
+@click.pass_context
+def grant_revoke(ctx, name, system):
+    _run(ctx, cmd_grant, grant_action="revoke", name=name, system=system)
+
+
+@cli.group(
+    "hosts",
+    help="manage trusted remote coordinators by name - trust-on-first-connect "
+         "(reads/writes known_hosts.json directly - no coordinator needed)",
+)
+def hosts_group():
+    pass
+
+
+@hosts_group.command("probe", help="fetch a coordinator's cert fingerprint without trusting it")
+@click.argument("url")
+@click.pass_context
+def hosts_probe(ctx, url):
+    _run(ctx, cmd_hosts, hosts_action="probe", url=url)
+
+
+@hosts_group.command("add", help="trust a coordinator's cert and save it under a name")
+@click.argument("name")
+@click.argument("url")
+@click.option("--yes", is_flag=True, help="skip the interactive fingerprint confirmation")
+@click.pass_context
+def hosts_add(ctx, name, url, yes):
+    _run(ctx, cmd_hosts, hosts_action="add", name=name, url=url, yes=yes)
+
+
+@hosts_group.command("list", help="list trusted hosts")
+@click.pass_context
+def hosts_list(ctx):
+    _run(ctx, cmd_hosts, hosts_action="list")
+
+
+@hosts_group.command("remove", help="stop trusting a host by name")
+@click.argument("name")
+@click.pass_context
+def hosts_remove(ctx, name):
+    _run(ctx, cmd_hosts, hosts_action="remove", name=name)
+
+
+@hosts_group.command("touch", help="bump a host's last-connected time (used internally when actually switching to it)")
+@click.argument("name")
+@click.pass_context
+def hosts_touch(ctx, name):
+    _run(ctx, cmd_hosts, hosts_action="touch", name=name)
+
+
+def main() -> None:
+    cli()
 
 
 if __name__ == "__main__":
