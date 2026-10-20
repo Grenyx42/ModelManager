@@ -290,6 +290,12 @@ def test_grant_filters_dump_all_endpoints_and_blocks_model_actions_outside_scope
     assert forbidden_ensure.status_code == 403
     assert forbidden_logs.status_code == 403
     assert doctor_attempt.status_code == 403  # owner-only, regardless of allowed_systems
+    # model-b's 403 must not reveal which system actually backs it (sys-b) -
+    # bob has no access there and shouldn't learn it exists from an error
+    # message alone (see routes._check_system_access).
+    assert "sys-b" not in forbidden_get.json()["error"]
+    assert "sys-b" not in forbidden_ensure.json()["error"]
+    assert "sys-b" not in forbidden_logs.json()["error"]
 
 
 def test_unmatched_token_is_still_rejected_even_with_grants_configured(tmp_path, monkeypatch):

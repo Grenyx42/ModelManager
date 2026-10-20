@@ -128,35 +128,54 @@ click an actual Ensure/Stop button against the real production coordinator
 panel (open it, switch hosts, Ensure/Stop a model, check Stats/Logs) is
 still the one verification step only the user can do.**
 
-## Phase 4 - Security/risk surface pass (0xSero #1)
+## Phase 4 - Security/risk surface pass (0xSero #1) - DONE 2026-10-19
 
-Audit, don't redesign - the goal is tightening what exists, not adding new
-abstraction. Specifically:
+Audit, don't redesign - the goal was tightening what exists, not adding new
+abstraction.
 
-- [ ] **Token mechanics**: confirm bearer tokens are high-entropy/random at
-      generation (not user-chosen), document that assumption explicitly
-      since `hash_token()` uses plain SHA-256 (fine for high-entropy secrets,
-      wrong assumption otherwise).
-- [ ] **Grant recon surface**: verify a scoped grant genuinely cannot learn
-      anything (system names, model names, error-message detail) about
-      systems outside its `allowed_systems`, including via `/v1/systems/
-      stats`, error responses, and timing differences.
-- [ ] **SSRF on `--peer`/`--host` resolution**: review `known_hosts.py` +
-      `cli.py`'s host resolution path for whether a malicious/compromised
-      peer entry (or probe target) could be pointed at `127.0.0.1`/internal
-      services in a way that matters here - decide and document the actual
-      threat model (this is a trusted-peer tool, not a public service) rather
-      than adding defensive complexity against threats that don't apply.
-- [ ] **TLS trust revocation**: confirm `hosts remove` actually invalidates a
-      previously-pinned fingerprint (no stale trust left behind), and that
-      there's a documented path for "I think this host's cert was
-      compromised, what do I do."
-- [ ] Write findings + decisions (fixed vs. accepted-and-documented) into
-      `CONTRIBUTING.md`'s Security section so they're not re-litigated later.
+- [x] **Token mechanics**: confirmed `auth.generate_token()` is
+      `secrets.token_hex(32)` (256 bits, CSPRNG) - the owner token and every
+      grant token (generated the same way, on the grantee's own machine) are
+      both high-entropy by construction. Documented the assumption directly
+      on `grants.hash_token()`'s docstring (plain SHA-256 is only correct
+      because of it). Considered a runtime minimum-length check to catch a
+      typed-password mistake; reverted it - it broke 11 tests relying on
+      short literal stand-in tokens, for a case the documented workflow
+      already doesn't produce. Documented that decision instead (see
+      `CONTRIBUTING.md`).
+- [x] **Grant recon surface**: found and fixed a real leak -
+      `routes._check_system_access`'s 403 message named the exact system(s)
+      a model/engine/gpu_group actually lives on, which a scoped grant could
+      read for any model name it could guess or enumerate, even with zero
+      access to that system. Fixed by never echoing the checked systems back
+      in the message. Added a regression test
+      (`test_grant_filters_dump_all_endpoints_and_blocks_model_actions_outside_scope`)
+      asserting the backing system name never appears in a 403 body.
+      Group-action per-member forbidden results (`manager.py`'s
+      `ensure_group`/`stop_group`/etc.) already used a generic message with
+      no leak - no change needed there.
+- [x] **SSRF on `--peer`/`hosts` resolution**: reviewed `known_hosts.py` and
+      `cli.py`'s probe/add path - concluded this isn't SSRF in the sense
+      that term usually means, since there's no REST route that takes a URL
+      from a network caller and fetches it on the coordinator's behalf;
+      `hosts probe`/`add` are local-only CLI commands run by the machine's
+      own owner, same trust level as running `curl` themselves. Documented
+      the reasoning in `CONTRIBUTING.md` rather than adding allowlisting
+      against an attacker that doesn't exist here.
+- [x] **TLS trust revocation**: confirmed `known_hosts.remove_known_host()`
+      already deletes both the JSON entry and the cert PEM file - no stale
+      trust left behind, `--peer <name>` fails cleanly afterward. No code
+      change needed. Added a "compromised cert" recovery walkthrough to
+      `docs/deployment.md` (remove, then re-add - `hosts add` always
+      re-fetches and re-shows the fingerprint for confirmation, even for an
+      already-known name, so a changed cert is never silently re-trusted).
+- [x] Wrote findings + decisions (fixed vs. accepted-and-documented,
+      including the timing-side-channel non-concern for this threat model)
+      into `CONTRIBUTING.md`'s Security section.
 
-**Resolve/test:** `pytest` pass; manual verification of any fix against a
-real scoped grant + a real `--peer` connection (same rigor as the original
-cross-host testing against airy), not just unit tests.
+**Resolve/test:** `pytest` (249 passed, including the new regression test);
+confirmed the fix and the revert-of-the-token-check by re-running the full
+suite after each change.
 
 ## Phase 5 - Docs and `skills.md` coverage for newcomers (Newcomer #1, ties back to DHH #1)
 

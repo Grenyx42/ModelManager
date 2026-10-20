@@ -11,6 +11,17 @@ from .config import default_grants_path
 
 
 def hash_token(token: str) -> str:
+    """Plain SHA-256, not a slow/salted KDF - correct only because every
+    token is assumed to already be high-entropy: auth.generate_token() is
+    secrets.token_hex(32) (256 bits), and a grant's token is the other
+    person's own output of that same function on their machine (see
+    `modelmanager grant add` / docs/deployment.md). A short/guessable token
+    hashed this way would be crackable offline by anyone who ever gets
+    grants.json - deliberately not enforced here (e.g. a minimum length)
+    since every real call path already only ever produces/forwards a
+    generated token; the project's test suite also relies on short literal
+    strings as stand-in tokens, so a hard floor would be checking a
+    constraint no real token ever gets close to violating."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 

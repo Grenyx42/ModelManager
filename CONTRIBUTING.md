@@ -251,3 +251,42 @@ covered, schema docs stay in sync). A couple of things it doesn't cover:
   same way every other route does; there's no default-safe behavior if you
   forget, since FastAPI doesn't know a route is config-mutating or
   system-scoped on its own.
+- `routes._check_system_access`'s `ForbiddenError` message deliberately
+  never names the system(s) it checked. For a model/engine/gpu_group-keyed
+  route, that system is the resource's *backing* system, not something a
+  caller already knows just from the name they asked for - echoing it back
+  would let a grant map model-name -> real system name for things outside
+  its scope, just by reading 403s for names it can guess or enumerate.
+  Keep any new forbidden-access message generic the same way; don't add the
+  checked systems/resource details back in for "better debugging."
+- Security review pass (2026-10-19) on the cross-host sharing feature -
+  decisions, not just findings, so they don't get re-litigated:
+  - **Fixed**: the system-name leak above (was named in the 403 message).
+  - **Accepted, not a real SSRF**: `modelmanager hosts probe`/`hosts add`
+    (and the panel's "Coordinator" field, which shells out to the same CLI)
+    take an arbitrary URL and connect to it - but there is no REST route
+    that accepts a URL from a network caller and fetches it on the
+    coordinator's behalf. `hosts probe`/`add` are local-only CLI commands
+    run by the machine's own owner with their own privileges, same trust
+    level as running `curl` themselves - there's no privilege boundary
+    being crossed, so this isn't SSRF in the sense that term usually means.
+    Don't add URL-scheme/host allowlisting here on the theory that it is;
+    it'd be complexity with no actual attacker it stops.
+  - **Accepted, inherent to TOFU**: a compromised *first* connection to a
+    new host can't be detected after the fact from the client's own
+    state - same limitation SSH host keys have. The out-of-band fingerprint
+    confirmation (already required unless `--yes`) is the only real
+    mitigation; don't try to paper over this with client-side code.
+  - **Accepted, not a practical threat model**: no timing-based
+    side-channel protection beyond what `hmac.compare_digest` already gives
+    the token comparisons themselves - this is a trusted-peer home-lab
+    tool, not a service defending against a remote attacker doing
+    statistical network-timing analysis. Don't add artificial delays or
+    constant-time guarantees to business logic (route dispatch, registry
+    lookups) chasing this.
+  - **Accepted, documented assumption**: `grants.hash_token` is plain
+    SHA-256, correct only because every token is assumed high-entropy (see
+    its own docstring). Not worth a runtime minimum-length check - the
+    documented flow only ever produces/forwards a real generated token, and
+    a hard floor would conflict with the test suite's short literal-string
+    stand-in tokens for no real safety gain.

@@ -233,6 +233,18 @@ above). `--peer` and the three env vars are independent mechanisms; use
 whichever fits - `--peer` for a coordinator you've TOFU-trusted by name,
 the env vars for one you fully own and can copy files from directly.
 
+**If you think a trusted coordinator's cert was compromised** (alice's
+machine was compromised, or you suspect the *original* trust was never
+actually alice - the one thing TOFU can't detect after the fact, same as an
+SSH host key you accepted without checking): `modelmanager hosts remove
+alice` deletes both the saved fingerprint and the cert file - `--peer
+alice` stops working immediately, nothing stale is left trusted. Re-running
+`hosts add alice <url>` always re-fetches and re-shows the current
+fingerprint for you to confirm again, even if you'd trusted that name
+before - it never silently re-trusts a changed cert without showing it to
+you first. Confirm the new fingerprint out-of-band again before accepting,
+exactly as the first time.
+
 ## Windows boxes
 
 Nothing to copy by hand: the coordinator deploys `scripts/windows/agent.ps1`

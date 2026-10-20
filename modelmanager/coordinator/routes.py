@@ -44,12 +44,19 @@ def _check_system_access(request: Request, systems: set[str]) -> None:
     """No-op for the owner token. For a scoped grant, requires at least one
     of `systems` to be in its allowed_systems - a model can have candidates
     on more than one system (see Manager.model_systems), so access to *any*
-    of them is enough to reach the whole model."""
+    of them is enough to reach the whole model.
+
+    Deliberately doesn't echo `systems` back in the error - for a
+    model/engine/gpu_group-keyed route, `systems` is the resource's
+    *backing* system(s), not something the caller already knows just from
+    the name they asked for. Naming it here would let a grant map
+    model-name -> real system name for things it has no access to, by
+    reading 403s for names it can already guess or enumerate."""
     grant = _grant(request)
     if grant is None:
         return
     if not systems & set(grant["allowed_systems"]):
-        raise ForbiddenError(f"grant {grant['name']!r} has no access to system(s) {sorted(systems)}")
+        raise ForbiddenError(f"grant {grant['name']!r} has no access to this resource")
 
 
 def _allowed_models(request: Request, manager: Manager, allowed: set[str] | None) -> set[str] | None:
