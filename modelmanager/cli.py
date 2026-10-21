@@ -29,7 +29,7 @@ DEFAULT_SERVE_PORT = int(os.environ.get("MODELMANAGER_PORT", "8778"))
 DEFAULT_URL = os.environ.get("MODELMANAGER_URL", f"https://127.0.0.1:{DEFAULT_SERVE_PORT}")
 
 
-def _client(args) -> httpx.Client:
+def _client(args, timeout: float = 30) -> httpx.Client:
     # --token wins outright; otherwise the same MODELMANAGER_TOKEN-then-file
     # resolution the coordinator itself uses (see auth.read_token) - so the
     # bar plugin, which only ever shells out to this CLI, authenticates for
@@ -59,7 +59,7 @@ def _client(args) -> httpx.Client:
     # clear TLS error pointing at the real problem instead of crashing on a
     # missing file.
     verify = str(cert_path) if cert_path.exists() else True
-    return httpx.Client(base_url=url, timeout=30, headers=headers, verify=verify)
+    return httpx.Client(base_url=url, timeout=timeout, headers=headers, verify=verify)
 
 
 def _fetch_cert_fingerprint(url: str) -> tuple[str, str]:
@@ -357,7 +357,7 @@ def _print_verify_pretty(body: dict) -> None:
 
 
 def cmd_verify(args) -> int:
-    with httpx.Client(base_url=args.url, timeout=args.timeout + 5) as client:
+    with _client(args, timeout=args.timeout + 5) as client:
         resp = _post_model_or_group(client, args.name, "verify", {"timeout": args.timeout})
         if not args.pretty:
             return _print_response(resp)
@@ -400,7 +400,7 @@ def cmd_group_ensure(args) -> int:
 
 
 def cmd_group_verify(args) -> int:
-    with httpx.Client(base_url=args.url, timeout=args.timeout + 5) as client:
+    with _client(args, timeout=args.timeout + 5) as client:
         resp = client.post(f"/v1/groups/{args.name}/verify", params={"timeout": args.timeout})
         if not args.pretty:
             return _print_response(resp)
