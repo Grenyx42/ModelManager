@@ -14,6 +14,8 @@ from ..runners.ssh import SSHRunner
 from . import windows_agent
 from .base import AdapterStatus, EngineAdapter
 
+BUSY_PROBE_TIMEOUT_SECONDS = 2.0
+
 
 class OllamaAdapter(EngineAdapter):
     """Controls models on an Ollama server via its own HTTP API.
@@ -35,6 +37,13 @@ class OllamaAdapter(EngineAdapter):
         self.engine = engine
         self.base_url = engine.base_url.rstrip("/")
         self.runner = runner
+        # model_ref -> the expires_at we last saw for it in /api/ps - see
+        # busy()'s own docstring. Lives on the adapter instance, which
+        # AdapterRegistry caches one-per-engine, so this survives across
+        # polls; a registry reload invalidates the whole adapter (and this
+        # along with it), which is fine - worst case is one "no opinion yet"
+        # busy() call before it starts comparing again.
+        self._last_expires_at: dict[str, str] = {}
 
     def _server_name(self) -> str:
         return f"ollama-server-{self.engine_name}"
@@ -124,6 +133,45 @@ class OllamaAdapter(EngineAdapter):
             if model.get("name") == candidate.model_ref or model.get("model") == candidate.model_ref:
                 return AdapterStatus(running=True)
         return AdapterStatus(running=False)
+
+    def busy(self, definition_name: str, candidate: Candidate, host: str, port: int) -> bool | None:
+        """True when /api/ps shows this model's expires_at has moved since
+        the last time we checked.
+
+        Ollama has no direct "is generating right now" signal the way
+        llama.cpp's /slots does. But we always load with keep_alive=-1
+        (see this class's own docstring) specifically so Ollama's own timer
+        never fires - which means expires_at normally never changes just
+        from time passing. Confirmed directly against a real server: a
+        request that doesn't specify its own keep_alive still re-touches
+        the model and recomputes expires_at from that moment, even though
+        the resulting duration is still "effectively forever" - so a
+        changed expires_at between two polls is real, available evidence
+        that *something* (traffic sent straight to Ollama, bypassing us
+        entirely) requested this model in between. That's exactly the gap
+        ActivityTracker exists to close.
+
+        None on the very first observation of a given model_ref (nothing
+        yet to compare against) and whenever it isn't currently loaded -
+        both "no opinion", same as a request failure.
+        """
+        try:
+            resp = httpx.get(f"{self.base_url}/api/ps", timeout=BUSY_PROBE_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+        except (httpx.HTTPError, ValueError):
+            return None
+        expires_at = None
+        for model in models:
+            if model.get("name") == candidate.model_ref or model.get("model") == candidate.model_ref:
+                expires_at = model.get("expires_at")
+                break
+        if expires_at is None:
+            self._last_expires_at.pop(candidate.model_ref, None)
+            return None
+        previous = self._last_expires_at.get(candidate.model_ref)
+        self._last_expires_at[candidate.model_ref] = expires_at
+        return None if previous is None else expires_at != previous
 
     def logs(self, definition_name: str, candidate: Candidate, lines: int = 200) -> str:
         if self.engine.binary:

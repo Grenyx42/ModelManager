@@ -367,6 +367,61 @@ def test_ollama_status_and_lifecycle(monkeypatch):
     assert posted["json"]["keep_alive"] == 0
 
 
+def test_ollama_busy_is_none_on_first_observation(monkeypatch):
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="qwen2.5:7b-instruct")
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(
+        200, json={"models": [{"name": "qwen2.5:7b-instruct", "expires_at": "2319-01-01T00:00:00Z"}]},
+        request=httpx.Request("GET", url),
+    ))
+
+    # Nothing to compare against yet - "no opinion", not "not busy".
+    assert adapter.busy("qwen-7b", candidate, "localhost", 11434) is None
+
+
+def test_ollama_busy_is_true_when_expires_at_moves_between_polls(monkeypatch):
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="qwen2.5:7b-instruct")
+
+    expires_at = "2319-01-01T00:00:00Z"
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(
+        200, json={"models": [{"name": "qwen2.5:7b-instruct", "expires_at": expires_at}]},
+        request=httpx.Request("GET", url),
+    ))
+    adapter.busy("qwen-7b", candidate, "localhost", 11434)  # first observation, establishes baseline
+
+    # Same expires_at as last time -> nothing touched it since the last poll.
+    assert adapter.busy("qwen-7b", candidate, "localhost", 11434) is False
+
+    # A real request (ours or traffic sent straight to Ollama) re-touches
+    # the model and pushes expires_at forward, even under our own
+    # keep_alive=-1 - confirmed directly against a real server.
+    expires_at = "2319-01-01T00:00:08Z"
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(
+        200, json={"models": [{"name": "qwen2.5:7b-instruct", "expires_at": expires_at}]},
+        request=httpx.Request("GET", url),
+    ))
+    assert adapter.busy("qwen-7b", candidate, "localhost", 11434) is True
+
+
+def test_ollama_busy_is_none_when_model_not_loaded_or_unreachable(monkeypatch):
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="qwen2.5:7b-instruct")
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url)))
+    assert adapter.busy("qwen-7b", candidate, "localhost", 11434) is None
+
+    def fake_get(url, timeout):
+        raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert adapter.busy("qwen-7b", candidate, "localhost", 11434) is None
+
+
 def test_ollama_start_raises_clean_error_on_model_not_found(monkeypatch):
     engine = EngineConfig(system="monolith", type="ollama", base_url="http://monolith:11434")
     adapter = OllamaAdapter("ollama-monolith", engine, FakeLocalRunner())
