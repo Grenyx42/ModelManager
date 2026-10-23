@@ -153,12 +153,13 @@ Column {
         // (backend down, nothing running yet). Same oscillating-opacity
         // technique as the tailscale panel's own account-switch indicator,
         // just a plain Rectangle instead of a real blur since nothing else
-        // in this plugin pulls in a graphical-effects dependency.
+        // in this plugin pulls in a graphical-effects dependency. Kept
+        // subtle on purpose - just enough to catch the eye, not a strobe.
         Rectangle {
           anchors.centerIn: parent
-          width: parent.width + Style.space(16)
-          height: parent.height + Style.space(16)
-          radius: Style.cornerRadius + Style.space(4)
+          width: parent.width + Style.space(10)
+          height: parent.height + Style.space(10)
+          radius: Style.cornerRadius + Style.space(2)
           color: Color.accent
           opacity: 0.0
           visible: root.backendUnreachable && !root.setupRunning
@@ -166,8 +167,8 @@ Column {
           SequentialAnimation on opacity {
             running: parent.visible
             loops: Animation.Infinite
-            NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 0.05; duration: 900; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0.22; duration: 1100; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0.06; duration: 1100; easing.type: Easing.InOutQuad }
           }
         }
 
