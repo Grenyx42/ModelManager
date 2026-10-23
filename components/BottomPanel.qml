@@ -90,18 +90,18 @@ Column {
         font.pixelSize: Style.font.caption
       }
       Row {
-        spacing: Style.space(8)
-        Button {
-          text: (root.linkClaudeChecked ? "☑ " : "☐ ") + "Claude Code"
-          foreground: root.linkClaudeChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-          bordered: true
-          onClicked: root.linkClaudeChecked = !root.linkClaudeChecked
+        spacing: Style.space(16)
+        LabeledToggle {
+          checked: root.linkClaudeChecked
+          label: "Claude Code"
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onToggled: root.linkClaudeChecked = !root.linkClaudeChecked
         }
-        Button {
-          text: (root.linkCodexChecked ? "☑ " : "☐ ") + "Codex"
-          foreground: root.linkCodexChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-          bordered: true
-          onClicked: root.linkCodexChecked = !root.linkCodexChecked
+        LabeledToggle {
+          checked: root.linkCodexChecked
+          label: "Codex"
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onToggled: root.linkCodexChecked = !root.linkCodexChecked
         }
       }
     }
@@ -123,11 +123,11 @@ Column {
       }
       Row {
         spacing: Style.space(8)
-        Button {
-          text: (root.registerOllamaChecked ? "☑ " : "☐ ") + "Register an existing Ollama model"
-          foreground: root.registerOllamaChecked ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-          bordered: true
-          onClicked: root.registerOllamaChecked = !root.registerOllamaChecked
+        LabeledToggle {
+          checked: root.registerOllamaChecked
+          label: "Register an existing Ollama model"
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onToggled: root.registerOllamaChecked = !root.registerOllamaChecked
         }
       }
     }
@@ -135,15 +135,55 @@ Column {
     Row {
       spacing: Style.space(8)
 
-      Button {
-        text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
-          : root.ollamaRegisterRunning ? "Registering..."
-          : (root.backendUnreachable ? "Run setup now" : "Apply")
-        enabled: !root.setupRunning && !root.skillLinkRunning && !root.ollamaRegisterRunning
-        bordered: true
+      Item {
+        id: setupButtonFrame
+        width: setupButton.implicitWidth
+        height: setupButton.implicitHeight
+        // Duplicates setupButton's own `visible` expression rather than
+        // binding to setupButton.visible directly - forwarding a child's
+        // `visible` into an ancestor's `visible` binding silently breaks
+        // in this QML engine (the ancestor never becomes visible, no
+        // warning logged) even though reading any other child property
+        // the same way works fine. Found by bisecting this exact binding.
         visible: root.setupResult !== "ok" || (root.registryIsDefault
           && (root.skillLinkResult === "" || root.ollamaRegisterResult === ""))
-        onClicked: root.startSetupAction()
+
+        // Pulsing glow pulls the eye to the one button that matters on a
+        // fresh install - only while it's actually the "get started" CTA
+        // (backend down, nothing running yet). Same oscillating-opacity
+        // technique as the tailscale panel's own account-switch indicator,
+        // just a plain Rectangle instead of a real blur since nothing else
+        // in this plugin pulls in a graphical-effects dependency.
+        Rectangle {
+          anchors.centerIn: parent
+          width: parent.width + Style.space(16)
+          height: parent.height + Style.space(16)
+          radius: Style.cornerRadius + Style.space(4)
+          color: Color.accent
+          opacity: 0.0
+          visible: root.backendUnreachable && !root.setupRunning
+
+          SequentialAnimation on opacity {
+            running: parent.visible
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0.05; duration: 900; easing.type: Easing.InOutQuad }
+          }
+        }
+
+        Button {
+          id: setupButton
+          anchors.fill: parent
+          text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
+            : root.ollamaRegisterRunning ? "Registering..."
+            : (root.backendUnreachable ? "Run setup now" : "Apply")
+          enabled: !root.setupRunning && !root.skillLinkRunning && !root.ollamaRegisterRunning
+          bordered: true
+          foreground: root.backendUnreachable ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+          visible: root.setupResult !== "ok" || (root.registryIsDefault
+            && (root.skillLinkResult === "" || root.ollamaRegisterResult === ""))
+          onClicked: root.startSetupAction()
+        }
       }
     }
 
