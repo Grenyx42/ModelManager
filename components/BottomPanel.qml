@@ -408,8 +408,21 @@ Column {
 
       Item {
         id: setupButtonFrame
-        width: setupButton.implicitWidth
-        height: setupButton.implicitHeight
+        // Includes the glow's own halo margin (see below) rather than
+        // letting the glow overflow a frame sized to just the button -
+        // the guidance block now lives inside a clip:true Flickable (see
+        // setupGuidanceFlick above, added to fix setup output overflowing
+        // the popup), and an overflowing glow got asymmetrically clipped
+        // by that Flickable's edges whenever the button sat flush against
+        // one (commonly the left, since the Column has no left padding,
+        // and the bottom, since the button is often the last tall thing
+        // before the Flickable's own capped height) while the opposite
+        // edges had room to spare - glow visible on top/right, missing on
+        // bottom/left, exactly as reported. Sizing the frame to its own
+        // full visual footprint instead keeps the glow entirely within
+        // bounds the Flickable already accounts for.
+        width: setupButton.implicitWidth + Style.space(10)
+        height: setupButton.implicitHeight + Style.space(10)
         // Duplicates setupButton's own `visible` expression rather than
         // binding to setupButton.visible directly - forwarding a child's
         // `visible` into an ancestor's `visible` binding silently breaks
@@ -427,9 +440,7 @@ Column {
         // in this plugin pulls in a graphical-effects dependency. Kept
         // subtle on purpose - just enough to catch the eye, not a strobe.
         Rectangle {
-          anchors.centerIn: parent
-          width: parent.width + Style.space(10)
-          height: parent.height + Style.space(10)
+          anchors.fill: parent
           radius: Style.cornerRadius + Style.space(2)
           color: Color.accent
           opacity: 0.0
@@ -445,7 +456,7 @@ Column {
 
         Button {
           id: setupButton
-          anchors.fill: parent
+          anchors.centerIn: parent
           text: root.setupRunning ? (root.diagnosisModeActive ? "Restarting..." : "Running setup...") : root.skillLinkRunning ? "Linking..."
             : root.ollamaRegisterRunning ? "Registering..."
             : (root.diagnosisModeActive ? "Restart backend service" : (root.backendUnreachable ? "Run setup now" : "Apply"))

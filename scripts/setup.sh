@@ -176,7 +176,30 @@ else
 fi
 if command -v systemctl >/dev/null && systemctl --user daemon-reload >/dev/null 2>&1; then
   systemctl --user enable --now modelmanager.service
-  echo "Coordinator running as a systemd --user service (check: systemctl --user status modelmanager.service)."
+
+  # Type=simple only guarantees the process has forked, not that it's
+  # finished loading the TLS cert and actually bound its port yet -
+  # `enable --now` returning is not the same as "ready for requests".
+  # Without this wait, setup "finishing" here raced the Omarchy panel's
+  # own post-setup refresh: it'd hit the coordinator during that startup
+  # window, flash a "cannot reach coordinator" error, and only resolve
+  # itself on the panel's *next* poll - confusing on an otherwise-
+  # successful install. Probing with the real CLI (not a raw curl)
+  # exercises the exact TLS+auth path a real request would.
+  echo "Waiting for the coordinator to come up..."
+  READY=0
+  for _ in $(seq 1 30); do
+    if "$VENV_DIR/bin/modelmanager" version >/dev/null 2>&1; then
+      READY=1
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$READY" == "1" ]]; then
+    echo "Coordinator running as a systemd --user service (check: systemctl --user status modelmanager.service)."
+  else
+    echo "warning: coordinator started but isn't responding yet after 15s - check: systemctl --user status modelmanager.service" >&2
+  fi
   echo "If this box might reboot unattended (no graphical login happening automatically), also run once: loginctl enable-linger $(whoami)"
 else
   echo "warning: no user systemd session available - couldn't start the coordinator automatically." >&2
