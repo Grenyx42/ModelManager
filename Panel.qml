@@ -1500,6 +1500,16 @@ Panel {
         // normal bottom-pinned size. `y` is a plain reactive property, not
         // part of the anchor system, and doesn't have that problem.
         y: root.localBackendDown ? 0 : (parent.height - height)
+        // Normally sized to its own content (Column's default implicit
+        // height). While pinned full-card above, stretch to actually fill
+        // it instead - otherwise it just sits at its natural (usually
+        // shorter) content height, leaving a dead gap between the setup
+        // guidance and the card's bottom edge. setupGuidanceFlick inside
+        // reads this to size itself, and the live-output log box within
+        // that reads *its* height in turn - the fill propagates down to
+        // where it's actually useful (more log visible, less scrolling)
+        // instead of just moving the empty space one level up.
+        height: root.localBackendDown ? parent.height : implicitHeight
       }
     }
   }

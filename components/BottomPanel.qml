@@ -66,7 +66,12 @@ Column {
     id: setupGuidanceFlick
     visible: root.firstRunSetupActive
     width: parent.width
-    height: Math.min(Style.space(420), contentHeight)
+    // Fills the card (bottomBlock's own height now stretches to match -
+    // see Panel.qml) while the backend's actually down, rather than
+    // shrinking to content and leaving the rest of the card empty below
+    // it. Once reachable again this Flickable isn't even visible, so the
+    // Math.min/content-fit behavior there is moot either way.
+    height: root.localBackendDown ? parent.height : Math.min(Style.space(420), contentHeight)
     contentWidth: width
     contentHeight: setupGuidanceColumn.implicitHeight
     clip: true
@@ -492,17 +497,29 @@ Column {
       font.pixelSize: Style.font.caption
     }
 
-    // Bordered, scrollable, fixed-height box - same treatment as the
-    // diagnosis status/logs boxes above. A plain wrapped Text here used to
-    // just keep growing with setupLiveOutput (capped to 10 lines, but that
-    // can still run taller than the popup's fixed contentHeight once
-    // stacked under the setup paragraph/checkboxes/button), pushing its
-    // later lines - the ones actually relevant mid-install - off the
-    // bottom edge of the popup entirely rather than behind a scrollbar.
+    // Bordered, scrollable box - same treatment as the diagnosis status/
+    // logs boxes above. A plain wrapped Text here used to just keep
+    // growing with setupLiveOutput (capped to 10 lines, but that can
+    // still run taller than the popup's fixed contentHeight once stacked
+    // under the setup paragraph/checkboxes/button), pushing its later
+    // lines - the ones actually relevant mid-install - off the bottom
+    // edge of the popup entirely rather than behind a scrollbar.
     Rectangle {
+      id: setupLiveBox
       visible: root.setupRunning && root.setupLiveOutput !== ""
       width: parent.width
-      height: Style.space(110)
+      // Grows to use whatever's left in the now-filled guidance area
+      // (see setupGuidanceFlick/bottomBlock's own height comments) rather
+      // than sitting at a small fixed height with empty card below it -
+      // this is the box the user is actually watching mid-install, so
+      // it's the one that should get the extra room. `y` is this Rectangle's
+      // own Column-assigned position, read back to know how much space is
+      // left below it; Style.space(110) stays as the floor for whenever
+      // there isn't more to give (short content above it, or not filling
+      // at all - e.g. the already-configured diagnosis "restart" path).
+      height: root.localBackendDown
+        ? Math.max(Style.space(110), setupGuidanceFlick.height - setupLiveBox.y - Style.space(10))
+        : Style.space(110)
       radius: Style.cornerRadius
       color: "transparent"
       border.width: 1
