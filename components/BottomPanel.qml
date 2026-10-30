@@ -110,8 +110,18 @@ Column {
       font.pixelSize: root.backendUnreachable ? Style.font.bodySmall : Style.font.caption
     }
 
+    // This paragraph, the skill-link/Ollama-register choices below, and
+    // the Key files box all answer "what am I about to do / what do I
+    // need to decide first" - once setupRunning, those choices are
+    // already locked in (applied automatically after setup.sh succeeds -
+    // see startSetupAction()/applyPendingSkillLinks()) and none of it is
+    // actionable any more, so it just crowds out the one thing actually
+    // worth looking at while it runs: the live log below. Hiding all of
+    // it specifically while setupRunning (each via `&& !root.setupRunning`
+    // on its own existing `visible`) frees up enough room that the log
+    // usually doesn't need to scroll at all for a normal, fast install.
     Text {
-      visible: root.backendUnreachable && root.setupResult !== "ok" && !root.diagnosisModeActive
+      visible: root.backendUnreachable && root.setupResult !== "ok" && !root.diagnosisModeActive && !root.setupRunning
       text: "Click setup below to build the backend environment, generate its security token and TLS cert, and then start it as a"
         + " systemd service."
       color: root.bar ? root.bar.foreground : Color.foreground
@@ -255,7 +265,7 @@ Column {
     }
 
     Column {
-      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive
+      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive && !root.setupRunning
       width: parent.width
       spacing: Style.space(2)
 
@@ -312,13 +322,13 @@ Column {
     }
 
     Item {
-      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive
+      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive && !root.setupRunning
       width: 1
       height: Style.space(3)
     }
 
     Column {
-      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive
+      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive && !root.setupRunning
       width: parent.width
       spacing: Style.space(2)
 
@@ -342,13 +352,13 @@ Column {
     }
 
     Item {
-      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive
+      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive && !root.setupRunning
       width: 1
       height: Style.space(3)
     }
 
     Column {
-      visible: root.backendUnreachable && root.setupResult !== "ok"
+      visible: root.backendUnreachable && root.setupResult !== "ok" && !root.setupRunning
       width: parent.width
       spacing: Style.space(2)
 
