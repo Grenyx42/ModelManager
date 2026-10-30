@@ -984,6 +984,17 @@ Panel {
       for (var i = 0; i < data.length; i++) if (data[i].active) count += 1
       runningCount = count
       lastError = ""
+      // registryIsDefault is otherwise only ever (re-)checked from the
+      // data.error branch above, so once setup finishes and the backend
+      // starts responding successfully, nothing ever re-ran this check -
+      // describing a first system/model afterward (via a linked agent or
+      // the CLI, the actual intended next step) would never flip
+      // firstRunSetupActive back off, leaving the panel stuck showing
+      // setup guidance forever even once the registry genuinely isn't
+      // default any more. Only worth re-checking while we still think
+      // we're in that state - once it's false, a real poll already
+      // proved it and there's nothing to self-correct.
+      if (root.registryIsDefault) root.checkFreshInstall()
     } catch (e) {
       lastError = "bad /v1/models response"
     }

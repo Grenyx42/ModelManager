@@ -52,9 +52,41 @@ Column {
   // that is the right response to a remote peer being unreachable or
   // never having had a model registered, so none of it should show
   // while targeting one.
-  Column {
+  // A plain Flickable, not a bordered box like the status/logs/key-files
+  // boxes nested inside it - this wraps the *whole* setup/diagnosis
+  // guidance block. Its content varies a lot by state (plain setup text
+  // vs. diagnosis-mode status/logs boxes vs. a mid-install live-output
+  // box, all potentially stacking up at once), and a plain Column here
+  // just kept growing past the popup's own fixed contentHeight, printing
+  // its later lines off the bottom edge of the card entirely instead of
+  // behind a scrollbar. Math.min only kicks in once content would
+  // actually overflow - the common short case still sizes to fit exactly
+  // as before.
+  Flickable {
+    id: setupGuidanceFlick
     visible: root.firstRunSetupActive
     width: parent.width
+    height: Math.min(Style.space(420), contentHeight)
+    contentWidth: width
+    contentHeight: setupGuidanceColumn.implicitHeight
+    clip: true
+    boundsBehavior: Flickable.StopAtBounds
+    flickableDirection: Flickable.VerticalFlick
+    interactive: contentHeight > height
+    ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
+
+    WheelHandler {
+      target: null
+      onWheel: (event) => {
+        var maxY = Math.max(0, setupGuidanceFlick.contentHeight - setupGuidanceFlick.height)
+        setupGuidanceFlick.contentY = Math.max(0, Math.min(maxY, setupGuidanceFlick.contentY - event.angleDelta.y))
+        event.accepted = true
+      }
+    }
+
+    Column {
+    id: setupGuidanceColumn
+    width: setupGuidanceFlick.width
     spacing: Style.space(6)
 
     Text {
@@ -421,14 +453,88 @@ Column {
       }
     }
 
+    // Once setup succeeds and both optional steps are resolved, the CTA
+    // button above hides itself (see its own `visible`) - which used to
+    // leave this whole block showing nothing but the "No model configured
+    // yet." heading, with no indication of what to actually do next or
+    // where the Coordinator/Models/Stats sections (still hidden - see
+    // root.firstRunSetupActive) went. They come back on their own once
+    // something's actually described (see parseModels's self-correcting
+    // registryIsDefault re-check) - this just explains that in the
+    // meantime instead of leaving a dead end.
     Text {
-      visible: root.setupRunning && root.setupLiveOutput !== ""
-      text: root.setupLiveOutput
-      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+      visible: root.setupResult === "ok" && root.registryIsDefault
+        && root.skillLinkResult !== "" && root.ollamaRegisterResult !== ""
+      text: "Setup complete and the backend is running. Describe your first system and model - via a linked"
+        + " coding agent or the modelmanager CLI - then reopen this panel; it'll switch over to the normal"
+        + " view automatically once something's configured."
+      color: root.bar ? root.bar.foreground : Color.foreground
       wrapMode: Text.Wrap
       width: parent.width
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
+    }
+
+    // Bordered, scrollable, fixed-height box - same treatment as the
+    // diagnosis status/logs boxes above. A plain wrapped Text here used to
+    // just keep growing with setupLiveOutput (capped to 10 lines, but that
+    // can still run taller than the popup's fixed contentHeight once
+    // stacked under the setup paragraph/checkboxes/button), pushing its
+    // later lines - the ones actually relevant mid-install - off the
+    // bottom edge of the popup entirely rather than behind a scrollbar.
+    Rectangle {
+      visible: root.setupRunning && root.setupLiveOutput !== ""
+      width: parent.width
+      height: Style.space(110)
+      radius: Style.cornerRadius
+      color: "transparent"
+      border.width: 1
+      border.color: Qt.rgba((root.bar ? root.bar.foreground : Color.foreground).r,
+        (root.bar ? root.bar.foreground : Color.foreground).g,
+        (root.bar ? root.bar.foreground : Color.foreground).b, 0.25)
+
+      Flickable {
+        id: setupLiveFlick
+        anchors.fill: parent
+        anchors.margins: Style.space(6)
+        contentWidth: width
+        contentHeight: setupLiveText.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
+
+        WheelHandler {
+          target: null
+          onWheel: (event) => {
+            var maxY = Math.max(0, setupLiveFlick.contentHeight - setupLiveFlick.height)
+            setupLiveFlick.contentY = Math.max(0, Math.min(maxY, setupLiveFlick.contentY - event.angleDelta.y))
+            event.accepted = true
+          }
+        }
+
+        Text {
+          id: setupLiveText
+          text: root.setupLiveOutput
+          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+          wrapMode: Text.WrapAnywhere
+          width: setupLiveFlick.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+
+          // Stay pinned to the latest output while setup is running, same
+          // as a terminal's own scrollback would - Qt.callLater so this
+          // reads contentHeight after it's actually re-settled off the
+          // text change, not the stale value from just before it.
+          onTextChanged: {
+            if (!root.setupRunning) return
+            Qt.callLater(function() {
+              setupLiveFlick.contentY = Math.max(0, setupLiveFlick.contentHeight - setupLiveFlick.height)
+            })
+          }
+        }
+      }
     }
     Text {
       visible: root.setupResult !== "" && root.setupResult !== "ok"
@@ -460,6 +566,7 @@ Column {
       font.pixelSize: Style.font.caption
     }
 
+    }
   }
 
   Text {
