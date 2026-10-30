@@ -240,17 +240,27 @@ Panel {
     return xdgConfig + "/modelmanager/registry.json"
   }
 
-  // True while the first-run setup guidance (components/BottomPanel.qml's
-  // top Column) is what's actually showing - the Coordinator/Models/Stats
-  // sections only do anything useful once a backend is actually reachable
-  // and has at least one model described, so they hide themselves rather
-  // than sit there showing "cannot reach coordinator" / empty / zero stats
-  // behind the setup instructions. Mirrors that Column's own visible
-  // expression exactly (kept here as the one canonical copy both this file
-  // and BottomPanel.qml read, instead of each re-deriving it). Covers both
-  // the setup and diagnosis narratives below - either way, nothing in
-  // Coordinator/Models/Stats works right now.
+  // True while the first-run setup/diagnosis guidance
+  // (components/BottomPanel.qml's top Column) is what's showing - either
+  // because the backend is down (nothing works at all - setup or
+  // diagnosis narrative) or because the registry is still the untouched
+  // default (nothing configured yet, but worth offering the skill-link/
+  // Ollama-register choices). Mirrors that Column's own visible
+  // expression exactly (kept here as the one canonical copy both this
+  // file and BottomPanel.qml read, instead of each re-deriving it).
   readonly property bool firstRunSetupActive: root.activeHost === "" && (root.backendUnreachable || root.registryIsDefault)
+
+  // Narrower than firstRunSetupActive above - just "can the backend
+  // actually do anything right now." Coordinator/Models/Stats only need
+  // to hide for *this* reason (nothing to query at all); an empty-but-
+  // reachable backend is a perfectly legitimate, informative state to
+  // show normally (0 models, filterable Coordinator field and all) rather
+  // than hiding behind setup guidance just because registryIsDefault is
+  // still true. Used instead of firstRunSetupActive for every visibility/
+  // position decision below this file makes about those three sections -
+  // firstRunSetupActive itself stays reserved for "is the guidance Column
+  // itself showing," which is a strictly broader condition.
+  readonly property bool localBackendDown: root.activeHost === "" && root.backendUnreachable
 
   // Mirrors modelmanager/config.py's default_token_path() - same
   // MODELMANAGER_TOKEN_PATH override, same XDG_CONFIG_HOME fallback - so
@@ -1266,7 +1276,7 @@ Panel {
       // list, so it doesn't share a row with that filter field.
       Item {
         id: hostRow
-        visible: !root.firstRunSetupActive
+        visible: !root.localBackendDown
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -1369,7 +1379,7 @@ Panel {
       // everything anchored below it - stays put.
       Item {
         id: hostLoadingRow
-        visible: !root.firstRunSetupActive
+        visible: !root.localBackendDown
         anchors.top: hostRow.bottom
         anchors.topMargin: Style.space(4)
         anchors.left: parent.left
@@ -1393,7 +1403,7 @@ Panel {
       // change the filter from.
       Item {
         id: modelsHeaderRow
-        visible: !root.firstRunSetupActive
+        visible: !root.localBackendDown
         anchors.top: hostLoadingRow.bottom
         anchors.topMargin: Style.space(8)
         anchors.left: parent.left
@@ -1451,7 +1461,7 @@ Panel {
       ModelsList {
         id: modelsFlick
         root: root
-        visible: !root.hostTrustPromptActive && !root.firstRunSetupActive
+        visible: !root.hostTrustPromptActive && !root.localBackendDown
         anchors.top: modelsHeaderRow.bottom
         anchors.topMargin: Style.space(10)
         anchors.left: parent.left
@@ -1471,21 +1481,25 @@ Panel {
         // Normally bottom-pinned (y = parent.height - height), with
         // modelsFlick filling whatever gap is left above it (see that
         // comment). While the Coordinator/Models/Stats sections above are
-        // hiding themselves (firstRunSetupActive), nothing else fills that
-        // gap any more, so this pins to the top instead - putting the
-        // setup guidance where those sections used to be rather than
-        // stranded at the bottom of an empty card.
+        // hiding themselves (localBackendDown - the backend can't do
+        // anything at all right now, not just "registry's still empty"),
+        // nothing else fills that gap any more, so this pins to the top
+        // instead - putting the setup/diagnosis guidance where those
+        // sections used to be rather than stranded at the bottom of an
+        // empty card. Once the backend's reachable again (even with an
+        // empty registry), this goes back to its normal bottom-pinned
+        // slot and Models/Stats reappear above/around it.
         //
         // A plain `y` binding rather than toggling anchors.top between a
         // real target and `undefined` - that toggle was tried first and
         // doesn't reliably revert in this QML engine (same category of
         // silent anchor/binding flakiness as LabeledToggle's visible-
-        // forwarding bug elsewhere in this file): once firstRunSetupActive
+        // forwarding bug elsewhere in this file): once localBackendDown
         // flipped back to false, bottomBlock stayed stretched full-height,
         // overlapping Coordinator/Models/Stats instead of returning to its
         // normal bottom-pinned size. `y` is a plain reactive property, not
         // part of the anchor system, and doesn't have that problem.
-        y: root.firstRunSetupActive ? 0 : (parent.height - height)
+        y: root.localBackendDown ? 0 : (parent.height - height)
       }
     }
   }

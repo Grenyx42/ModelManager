@@ -73,7 +73,13 @@ Column {
     boundsBehavior: Flickable.StopAtBounds
     flickableDirection: Flickable.VerticalFlick
     interactive: contentHeight > height
-    ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
+    // Plain AsNeeded, not the always-visible PanelScrollBar the nested
+    // status/logs/live-output boxes use below - this outer Flickable is a
+    // rare-case overflow safety net, not a primary scroll surface, and an
+    // always-on track running down the whole guidance block read as "this
+    // entire area scrolls" when really only those inner log boxes
+    // normally do. Stays invisible unless content genuinely overflows.
+    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
     WheelHandler {
       target: null
