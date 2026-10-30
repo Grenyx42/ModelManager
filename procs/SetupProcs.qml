@@ -10,6 +10,7 @@ Item {
   required property var root
 
   property alias registryDefaultCheckProc: registryDefaultCheckProc
+  property alias setupTokenCheckProc: setupTokenCheckProc
   property alias setupProc: setupProc
   property alias skillLinkProc: skillLinkProc
   property alias ollamaRegisterProc: ollamaRegisterProc
@@ -22,6 +23,12 @@ Item {
     id: registryDefaultCheckProc
     command: []
     onExited: (code) => { root.registryIsDefault = (code === 0) }
+  }
+
+  Process {
+    id: setupTokenCheckProc
+    command: []
+    onExited: (code) => { root.setupPreviouslyDone = (code === 0) }
   }
 
   Process {

@@ -240,6 +240,81 @@ Panel {
     return xdgConfig + "/modelmanager/registry.json"
   }
 
+  // True while the first-run setup guidance (components/BottomPanel.qml's
+  // top Column) is what's actually showing - the Coordinator/Models/Stats
+  // sections only do anything useful once a backend is actually reachable
+  // and has at least one model described, so they hide themselves rather
+  // than sit there showing "cannot reach coordinator" / empty / zero stats
+  // behind the setup instructions. Mirrors that Column's own visible
+  // expression exactly (kept here as the one canonical copy both this file
+  // and BottomPanel.qml read, instead of each re-deriving it). Covers both
+  // the setup and diagnosis narratives below - either way, nothing in
+  // Coordinator/Models/Stats works right now.
+  readonly property bool firstRunSetupActive: root.activeHost === "" && (root.backendUnreachable || root.registryIsDefault)
+
+  // Mirrors modelmanager/config.py's default_token_path() - same
+  // MODELMANAGER_TOKEN_PATH override, same XDG_CONFIG_HOME fallback - so
+  // this always points at the same file scripts/setup.sh writes once, on
+  // its very first run, and never touches again.
+  readonly property string tokenFilePath: {
+    const override = Quickshell.env("MODELMANAGER_TOKEN_PATH") || ""
+    if (override.length > 0) return override
+    const xdgConfig = Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
+    return xdgConfig + "/modelmanager/token"
+  }
+
+  // Set by setupTokenCheckProc (see checkSetupAlreadyDone()) - true once
+  // we've confirmed a token file already exists, i.e. setup.sh has
+  // actually run on this machine before. Used only to pick which of the
+  // two backendUnreachable narratives below to show; doesn't change what
+  // clicking the button actually does (setup.sh is idempotent either way
+  // - see its own comments - so it's the correct fix for a never-configured
+  // machine *and* a previously-working one that's just crashed/stopped).
+  property bool setupPreviouslyDone: false
+
+  // "Setup was never finished" (still needs setup.sh) vs "setup finished
+  // once, but the service isn't running right now" (something to diagnose,
+  // not configure) - same backendUnreachable symptom either way, so this
+  // is the only signal that tells them apart. Basics only for now (see
+  // components/BottomPanel.qml's diagnosisModeActive branch) - meant to be
+  // iterated on once there's a real crashed/stopped service to test against.
+  readonly property bool diagnosisModeActive: root.activeHost === "" && root.backendUnreachable && root.setupPreviouslyDone
+
+  // Mirrors checkFreshInstall() below - same reasoning, same trigger point
+  // (parseModels()'s data.error branch), just testing for the token file's
+  // existence instead of comparing registry.json to the clean starter.
+  function checkSetupAlreadyDone() {
+    if (setupTokenCheckProc.running) return
+    setupTokenCheckProc.command = ["sh", "-c", "test -f \"$1\"", "sh", root.tokenFilePath]
+    setupTokenCheckProc.running = true
+  }
+
+  // Raw `systemctl status`/`journalctl` output (see procs/DiagnosisProcs.qml)
+  // - shown directly in diagnosis mode instead of just telling the user to
+  // run those commands themselves. "" until the first result lands.
+  property string diagnosisStatusOutput: ""
+  property string diagnosisLogsOutput: ""
+
+  // Same trigger point as checkFreshInstall()/checkSetupAlreadyDone() -
+  // cheap enough to just always run alongside them (whether or not this
+  // machine turns out to be a diagnosis-mode case), rather than waiting on
+  // setupPreviouslyDone first and adding a second round-trip before this
+  // shows anything.
+  function checkDiagnosisInfo() {
+    if (!diagnosisStatusProc.running) diagnosisStatusProc.running = true
+    if (!diagnosisLogsProc.running) diagnosisLogsProc.running = true
+  }
+
+  // Mirrors modelmanager/cli.py's own DEFAULT_URL - same MODELMANAGER_URL/
+  // MODELMANAGER_PORT overrides, same https://127.0.0.1:8778 fallback - so
+  // this always names the same address `serve` itself binds to locally.
+  readonly property string localCoordinatorUrl: {
+    const override = Quickshell.env("MODELMANAGER_URL") || ""
+    if (override.length > 0) return override
+    const port = Quickshell.env("MODELMANAGER_PORT") || "8778"
+    return "https://127.0.0.1:" + port
+  }
+
   // True once we've confirmed the live registry.json is missing entirely, or
   // byte-identical to the shipped empty starter (registry.clean.json) -
   // i.e. nobody has described their own machines/models yet. Only
@@ -279,6 +354,9 @@ Panel {
   // under a shell style that never expected it.
   property bool linkClaudeChecked: false
   property bool linkCodexChecked: false
+  property bool linkOpenCodeChecked: false
+  property bool linkCursorChecked: false
+  property bool linkHermesChecked: false
 
   property bool skillLinkRunning: false
   property var skillLinkQueue: []
@@ -342,8 +420,32 @@ Panel {
     root.skillLinkQueue = []
     if (root.linkClaudeChecked) root.skillLinkQueue.push("claude")
     if (root.linkCodexChecked) root.skillLinkQueue.push("codex")
+    if (root.linkOpenCodeChecked) root.skillLinkQueue.push("opencode")
+    if (root.linkCursorChecked) root.skillLinkQueue.push("cursor")
+    if (root.linkHermesChecked) root.skillLinkQueue.push("hermes")
     root.skillLinkDoneList = []
     root.processSkillLinkQueue()
+  }
+
+  // Claude Code/Codex/Cursor/Hermes all scan a personal
+  // `~/.<agent>/skills/<name>` directory (confirmed against each one's own
+  // docs - Cursor's is ~/.cursor/skills, same shape as the others; Hermes's
+  // ~/.hermes/skills confirmed directly on this machine, already populated
+  // with Omarchy's own default skills the same way ~/.claude/skills and
+  // ~/.codex/skills are), but OpenCode is the odd one out: its global skill
+  // directory is
+  // $XDG_CONFIG_HOME/opencode/skills/<name> (opencode.ai/docs/skills),
+  // same XDG convention this project's own registryJsonPath/tokenFilePath
+  // already use - not ~/.opencode/skills, which OpenCode doesn't scan at
+  // all. Keeping this as its own lookup rather than bending the uniform
+  // formula to fit, so a future fifth agent with its own quirk doesn't
+  // have to fight the pattern either.
+  function skillLinkDestPath(agent) {
+    if (agent === "opencode") {
+      const xdgConfig = Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
+      return xdgConfig + "/opencode/skills/modelmanager"
+    }
+    return Quickshell.env("HOME") + "/." + agent + "/skills/modelmanager"
   }
 
   function processSkillLinkQueue() {
@@ -354,7 +456,7 @@ Panel {
     const agent = root.skillLinkQueue.shift()
     root.skillLinkRunning = true
     root.skillLinkCurrentAgent = agent
-    const dst = Quickshell.env("HOME") + "/." + agent + "/skills/modelmanager"
+    const dst = root.skillLinkDestPath(agent)
     skillLinkProc.command = [
       "sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && ln -sf \"$1\" \"$2\"",
       "sh", root.skillDirPath, dst
@@ -445,6 +547,18 @@ Panel {
   readonly property var filteredSystemNames: root.modelFilter.trim() === ""
     ? root.systemNames
     : root.systemNames.filter(function(n) { return root.filteredSystemNameSet[n] })
+
+  // Stats section's own filter - a direct partial match on the system name
+  // itself, independent of (and applied on top of) the Models filter above.
+  // Separate property/field because it answers a different question ("which
+  // systems do I want to see stats for") than modelFilter's ("which models
+  // am I looking for").
+  property string statsFilter: ""
+  readonly property var displayedSystemNames: {
+    var needle = root.statsFilter.trim().toLowerCase()
+    if (needle === "") return root.filteredSystemNames
+    return root.filteredSystemNames.filter(function(n) { return n.toLowerCase().indexOf(needle) !== -1 })
+  }
 
   // system name -> list of currently-active model names actually loaded on
   // it (unfiltered - the Stats header always reflects live reality, even
@@ -860,6 +974,8 @@ Panel {
       if (data && typeof data === "object" && !Array.isArray(data) && data.error) {
         lastError = data.error
         root.checkFreshInstall()
+        root.checkSetupAlreadyDone()
+        root.checkDiagnosisInfo()
         return
       }
       models = data
@@ -1075,11 +1191,16 @@ Panel {
 
   SetupProcs { id: setupProcsGroup; root: root }
   property alias registryDefaultCheckProc: setupProcsGroup.registryDefaultCheckProc
+  property alias setupTokenCheckProc: setupProcsGroup.setupTokenCheckProc
   property alias setupProc: setupProcsGroup.setupProc
   property alias skillLinkProc: setupProcsGroup.skillLinkProc
   property alias ollamaRegisterProc: setupProcsGroup.ollamaRegisterProc
   property alias setupOut: setupProcsGroup.setupOut
   property alias setupErr: setupProcsGroup.setupErr
+
+  DiagnosisProcs { id: diagnosisProcsGroup; root: root }
+  property alias diagnosisStatusProc: diagnosisProcsGroup.diagnosisStatusProc
+  property alias diagnosisLogsProc: diagnosisProcsGroup.diagnosisLogsProc
 
 
   BarIconButton {
@@ -1115,7 +1236,7 @@ Panel {
     // same size whatever's in it, and each section scrolls inside its own
     // slot (see the layout comment below). cappedContentHeight still clamps
     // to the space actually available beside the bar on a short screen.
-    contentHeight: panel.cappedContentHeight(Style.space(560))
+    contentHeight: panel.cappedContentHeight(Style.space(500))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -1125,7 +1246,7 @@ Panel {
       // moveRequested mid-typing, etc.) - the documented pattern for an
       // inline text editor inside a PanelKeyCatcher (see its own comments)
       // is exactly this: short-circuit while the editor has focus.
-      blocked: modelFilterField.activeFocus || hostField.activeFocus
+      blocked: modelFilterField.activeFocus || hostField.activeFocus || bottomBlock.statsFilterFieldFocus
       onCloseRequested: root.close()
 
       // Its own row at the very top, above the Models header/filter row -
@@ -1134,6 +1255,7 @@ Panel {
       // list, so it doesn't share a row with that filter field.
       Item {
         id: hostRow
+        visible: !root.firstRunSetupActive
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -1164,8 +1286,43 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           width: Style.space(230)
           verticalPadding: Style.space(2)
-          placeholderText: "local - type a host/IP, or ↑ for history"
+          // Short enough to actually fit in the field itself (the full
+          // explanation - including the ↑-for-history hint - was getting
+          // silently truncated with a trailing "..." at this width); the
+          // full text lives in the hover tooltip below instead.
+          placeholderText: "local, or type a host/IP"
           foreground: root.activeHost !== "" ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+          hoverEnabled: true
+          PanelToolTip {
+            // Default ToolTip positioning plus PanelToolTip's own unwrapped
+            // contentItem Text let this balloon into a single screen-wide
+            // line - pinned explicitly below the field instead, with a
+            // capped width and a wrapping contentItem (PanelToolTip's own
+            // contentItem property is typed Item, so a plain
+            // `contentItem.wrapMode:` binding fails to resolve - redefining
+            // it here, mirroring PanelToolTip.qml's own contentItem, is the
+            // straightforward way to get wrapping), and some transparency
+            // so it reads as a hint rather than a modal-ish overlay.
+            id: coordinatorHostTip
+            visible: hostField.text === "" && hostField.hovered
+            text: "Leave empty for this machine's own backend. Type a host/IP to switch coordinators, or press ↑↓ for recent hosts."
+            x: 0
+            y: hostField.height + Style.space(4)
+            width: Style.space(260)
+            opacity: 0.75
+            contentItem: Text {
+              textFormat: Text.PlainText
+              text: coordinatorHostTip.text
+              wrapMode: Text.Wrap
+              color: coordinatorHostTip.panelForeground
+              font.family: coordinatorHostTip.fontFamily
+              font.pixelSize: coordinatorHostTip.fontSize
+              leftPadding: Border.left(coordinatorHostTip.panelBorderSpec) + Style.spacing.controlPaddingX
+              rightPadding: Border.right(coordinatorHostTip.panelBorderSpec) + Style.spacing.controlPaddingX
+              topPadding: Border.top(coordinatorHostTip.panelBorderSpec) + Style.spacing.controlPaddingY
+              bottomPadding: Border.bottom(coordinatorHostTip.panelBorderSpec) + Style.spacing.controlPaddingY
+            }
+          }
           Keys.onReturnPressed: root.attemptSwitchHost(text)
           Keys.onEnterPressed: root.attemptSwitchHost(text)
           Keys.onEscapePressed: root.close()
@@ -1201,6 +1358,7 @@ Panel {
       // everything anchored below it - stays put.
       Item {
         id: hostLoadingRow
+        visible: !root.firstRunSetupActive
         anchors.top: hostRow.bottom
         anchors.topMargin: Style.space(4)
         anchors.left: parent.left
@@ -1224,6 +1382,7 @@ Panel {
       // change the filter from.
       Item {
         id: modelsHeaderRow
+        visible: !root.firstRunSetupActive
         anchors.top: hostLoadingRow.bottom
         anchors.topMargin: Style.space(8)
         anchors.left: parent.left
@@ -1281,7 +1440,7 @@ Panel {
       ModelsList {
         id: modelsFlick
         root: root
-        visible: !root.hostTrustPromptActive
+        visible: !root.hostTrustPromptActive && !root.firstRunSetupActive
         anchors.top: modelsHeaderRow.bottom
         anchors.topMargin: Style.space(10)
         anchors.left: parent.left
@@ -1296,9 +1455,26 @@ Panel {
       BottomPanel {
         id: bottomBlock
         root: root
-        anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
+        // Normally bottom-pinned (y = parent.height - height), with
+        // modelsFlick filling whatever gap is left above it (see that
+        // comment). While the Coordinator/Models/Stats sections above are
+        // hiding themselves (firstRunSetupActive), nothing else fills that
+        // gap any more, so this pins to the top instead - putting the
+        // setup guidance where those sections used to be rather than
+        // stranded at the bottom of an empty card.
+        //
+        // A plain `y` binding rather than toggling anchors.top between a
+        // real target and `undefined` - that toggle was tried first and
+        // doesn't reliably revert in this QML engine (same category of
+        // silent anchor/binding flakiness as LabeledToggle's visible-
+        // forwarding bug elsewhere in this file): once firstRunSetupActive
+        // flipped back to false, bottomBlock stayed stretched full-height,
+        // overlapping Coordinator/Models/Stats instead of returning to its
+        // normal bottom-pinned size. `y` is a plain reactive property, not
+        // part of the anchor system, and doesn't have that problem.
+        y: root.firstRunSetupActive ? 0 : (parent.height - height)
       }
     }
   }

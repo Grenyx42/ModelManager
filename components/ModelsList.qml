@@ -16,7 +16,7 @@ Flickable {
   boundsBehavior: Flickable.StopAtBounds
   flickableDirection: Flickable.VerticalFlick
   interactive: contentHeight > height
-  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+  ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
 
   // Plain Flickable only grabs the wheel when it's actually scrollable
   // (interactive above) and stops grabbing it once scrolled to its own
@@ -58,21 +58,39 @@ Flickable {
         readonly property bool starting: root.groupEnsureProc.running && root.groupEnsureProc.pendingName === modelData.name
         readonly property bool stopping: root.groupStopProc.running && root.groupStopProc.pendingName === modelData.name
 
-        Row {
+        // Anchor-based rather than a Row whose children's widths are
+        // supposed to sum to exactly parent.width - that arithmetic left
+        // zero margin on the right (confirmed: 8 (dot) + 2*Style.space(8)
+        // (the Row's own inter-child spacing) + this Text's width summed
+        // to precisely parent.width), so groupActionBtn's right edge sat
+        // flush against - and clipped past - the card's edge, and didn't
+        // line up with the Ensure/Stop buttons on the model rows below
+        // (those reserve a real margin - Style.space(80) in a similar
+        // sum-to-parent.width formula that works out to ~Style.space(48)
+        // of actual right margin, matched here directly instead of
+        // re-deriving it from an unrelated row's arithmetic again).
+        Item {
           width: parent.width
-          spacing: Style.space(8)
+          implicitHeight: Math.max(groupDot.implicitHeight, groupActionBtn.implicitHeight, groupNameText.implicitHeight)
+          height: implicitHeight
 
           Rectangle {
+            id: groupDot
             width: Style.space(8)
             height: Style.space(8)
             radius: width / 2
+            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             color: root.groupStatusColor(groupEntry.st)
           }
 
           Text {
+            id: groupNameText
             textFormat: Text.PlainText
-            width: parent.width - groupActionBtn.implicitWidth - Style.space(24)
+            anchors.left: groupDot.right
+            anchors.leftMargin: Style.space(8)
+            anchors.right: groupActionBtn.left
+            anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             text: "GRP:" + modelData.name
             color: root.bar ? root.bar.foreground : Color.foreground
@@ -90,6 +108,9 @@ Flickable {
           // "it is."
           Button {
             id: groupActionBtn
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(48)
+            anchors.verticalCenter: parent.verticalCenter
             text: groupEntry.starting ? "Starting..." : (groupEntry.stopping ? "Stopping..." : (groupEntry.allUp ? "Stop" : "Ensure"))
             enabled: !root.groupEnsureProc.running && !root.groupStopProc.running
             foreground: enabled ? Color.foreground : Color.muted

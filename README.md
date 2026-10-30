@@ -127,10 +127,11 @@ skippable:
   the CLI or bar widget run locally (see [Omarchy plugin](#omarchy-plugin));
   the script says so at the time if you pick a non-default port.
 - Whether to symlink [`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md)
-  into a coding agent's personal skills directory (Claude Code, Codex, or
-  skip) - it never does this without asking, since it's touching your agent
-  setup, not just this plugin's own config; say no and link it yourself
-  later, or just paste the file into a chat.
+  into a coding agent's personal skills directory (Claude Code, Codex,
+  OpenCode, Cursor CLI, Hermes, or skip) - it never does this without
+  asking, since it's touching your agent setup, not just this plugin's own
+  config; say no and link it yourself later, or just paste the file into a
+  chat.
 
 Then describe your actual systems/engines/models - that part can't be
 automated, it's your own machines - either by telling that agent to set up

@@ -206,22 +206,33 @@ esac
 # skills/modelmanager/SKILL.md teaches a coding agent how to drive the REST
 # API/CLI to set up a first model - but it's only ever read if it lives
 # somewhere the agent actually scans itself: a personal skill directory
-# (~/.claude/skills/<name>, ~/.codex/skills/<name> - same symlink convention
-# Omarchy's own skills already use on this machine). Asking first, rather
-# than just dropping a symlink outside this repo unasked, since that's a
-# change to the user's agent setup, not this plugin's own config. Skipped
-# entirely when not running interactively (piped install, CI, etc.).
+# (~/.claude/skills/<name>, ~/.codex/skills/<name>, ~/.cursor/skills/<name>,
+# ~/.hermes/skills/<name> - same symlink convention Omarchy's own skills
+# already use on this machine. OpenCode is the odd one out - its global
+# skill directory is $XDG_CONFIG_HOME/opencode/skills/<name> per
+# opencode.ai/docs/skills, not ~/.opencode/skills, which it doesn't scan at
+# all). Asking first, rather than just dropping a symlink outside this repo
+# unasked, since that's a change to the user's agent setup, not this
+# plugin's own config. Skipped entirely when not running interactively
+# (piped install, CI, etc.).
 SKILL_SRC="$REPO_DIR/skills/modelmanager"
 if [[ -t 0 && -t 1 ]]; then
   echo ""
   echo "Link the modelmanager skill into a coding agent, so it can set up your first model for you?"
   echo "  1) Claude Code (~/.claude/skills/modelmanager)"
   echo "  2) Codex (~/.codex/skills/modelmanager)"
-  echo "  3) None"
-  read -r -p "Choice [1/2/3, default 3]: " SKILL_CHOICE || SKILL_CHOICE=3
+  echo "  3) OpenCode (\${XDG_CONFIG_HOME:-~/.config}/opencode/skills/modelmanager)"
+  echo "  4) Cursor CLI (~/.cursor/skills/modelmanager)"
+  echo "  5) Hermes (~/.hermes/skills/modelmanager)"
+  echo "  6) None"
+  read -r -p "Choice [1/2/3/4/5/6, default 6]: " SKILL_CHOICE || SKILL_CHOICE=6
+  OPENCODE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
   case "$SKILL_CHOICE" in
     1) SKILL_DST="$HOME/.claude/skills/modelmanager" ;;
     2) SKILL_DST="$HOME/.codex/skills/modelmanager" ;;
+    3) SKILL_DST="$OPENCODE_CONFIG_DIR/skills/modelmanager" ;;
+    4) SKILL_DST="$HOME/.cursor/skills/modelmanager" ;;
+    5) SKILL_DST="$HOME/.hermes/skills/modelmanager" ;;
     *) SKILL_DST="" ;;
   esac
   if [[ -n "$SKILL_DST" ]]; then

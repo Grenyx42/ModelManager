@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell
 import qs.Ui
 import qs.Commons
 
@@ -13,6 +14,11 @@ import qs.Commons
 Column {
   required property var root
   spacing: Style.space(10)
+
+  // Reached from Panel.qml's PanelKeyCatcher (see its `blocked` binding) so
+  // typing in this field doesn't leak keystrokes into the panel's h/j/k/l
+  // shortcuts, same as modelFilterField/hostField already get.
+  property alias statsFilterFieldFocus: statsFilterField.activeFocus
 
   Text {
     visible: root.actionError !== ""
@@ -47,25 +53,24 @@ Column {
   // never having had a model registered, so none of it should show
   // while targeting one.
   Column {
-    visible: root.activeHost === "" && (root.backendUnreachable || root.registryIsDefault)
+    visible: root.firstRunSetupActive
     width: parent.width
     spacing: Style.space(6)
 
     Text {
-      text: root.backendUnreachable ? "Backend not running." : "No model configured yet."
+      text: root.backendUnreachable ? "ModelManager back-end isn't running." : "No model configured yet."
       color: root.backendUnreachable ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
       font.bold: true
       wrapMode: Text.Wrap
       width: parent.width
       font.family: Style.font.family
-      font.pixelSize: Style.font.caption
+      font.pixelSize: root.backendUnreachable ? Style.font.bodySmall : Style.font.caption
     }
 
     Text {
-      visible: root.backendUnreachable && root.setupResult !== "ok"
-      text: "Builds the backend, generates a token/TLS cert, and starts it as a"
-        + " systemd service (no custom listen port here - run"
-        + " ./scripts/setup.sh yourself in a terminal for that)."
+      visible: root.backendUnreachable && root.setupResult !== "ok" && !root.diagnosisModeActive
+      text: "Click setup below to build the backend environment, generate its security token and TLS cert, and then start it as a"
+        + " systemd service."
       color: root.bar ? root.bar.foreground : Color.foreground
       wrapMode: Text.Wrap
       width: parent.width
@@ -73,48 +78,209 @@ Column {
       font.pixelSize: Style.font.caption
     }
 
+    // Basics only - a token file existing means setup.sh ran here before,
+    // so a connection-refused error is something to diagnose (crashed,
+    // manually stopped, box just rebooted) rather than something to set
+    // up. The button below still runs the same idempotent setup.sh either
+    // way (see root.diagnosisModeActive's own comment) - re-running it is
+    // a legitimate fix (its last step is `systemctl --user enable --now`),
+    // just mislabeled as "setup" when nothing actually needs configuring.
+    Text {
+      visible: root.diagnosisModeActive && root.setupResult !== "ok"
+      text: "A previous setup was found on this machine, so the service should already be configured -"
+        + " it just isn't running right now. Here's its current status:"
+      color: root.bar ? root.bar.foreground : Color.foreground
+      wrapMode: Text.Wrap
+      width: parent.width
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+
+    // Basics only (see this Column's own comment above) - raw command
+    // output in a bordered, scrollable box (same border treatment as the
+    // "Key files / info" box below, same height-capped Flickable pattern
+    // as the Stats section's statsFlick, just without its Repeater since
+    // there's only ever one block of text here).
+    Text {
+      visible: root.diagnosisModeActive && root.setupResult !== "ok"
+      text: "Service status:"
+      color: root.bar ? root.bar.foreground : Color.foreground
+      wrapMode: Text.Wrap
+      width: parent.width
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+
+    Rectangle {
+      visible: root.diagnosisModeActive && root.setupResult !== "ok"
+      x: Style.space(10)
+      width: parent.width - Style.space(10)
+      height: Style.space(110)
+      radius: Style.cornerRadius
+      color: "transparent"
+      border.width: 1
+      border.color: Qt.rgba((root.bar ? root.bar.foreground : Color.foreground).r,
+        (root.bar ? root.bar.foreground : Color.foreground).g,
+        (root.bar ? root.bar.foreground : Color.foreground).b, 0.25)
+
+      Flickable {
+        id: diagnosisStatusFlick
+        anchors.fill: parent
+        anchors.margins: Style.space(6)
+        contentWidth: width
+        contentHeight: diagnosisStatusText.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
+
+        WheelHandler {
+          target: null
+          onWheel: (event) => {
+            var maxY = Math.max(0, diagnosisStatusFlick.contentHeight - diagnosisStatusFlick.height)
+            diagnosisStatusFlick.contentY = Math.max(0, Math.min(maxY, diagnosisStatusFlick.contentY - event.angleDelta.y))
+            event.accepted = true
+          }
+        }
+
+        Text {
+          id: diagnosisStatusText
+          text: root.diagnosisStatusOutput !== "" ? root.diagnosisStatusOutput : "Checking..."
+          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+          wrapMode: Text.WrapAnywhere
+          width: diagnosisStatusFlick.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Text {
+      visible: root.diagnosisModeActive && root.setupResult !== "ok"
+      text: "Recent logs:"
+      color: root.bar ? root.bar.foreground : Color.foreground
+      wrapMode: Text.Wrap
+      width: parent.width
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+
+    Rectangle {
+      visible: root.diagnosisModeActive && root.setupResult !== "ok"
+      x: Style.space(10)
+      width: parent.width - Style.space(10)
+      height: Style.space(140)
+      radius: Style.cornerRadius
+      color: "transparent"
+      border.width: 1
+      border.color: Qt.rgba((root.bar ? root.bar.foreground : Color.foreground).r,
+        (root.bar ? root.bar.foreground : Color.foreground).g,
+        (root.bar ? root.bar.foreground : Color.foreground).b, 0.25)
+
+      Flickable {
+        id: diagnosisLogsFlick
+        anchors.fill: parent
+        anchors.margins: Style.space(6)
+        contentWidth: width
+        contentHeight: diagnosisLogsText.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
+
+        WheelHandler {
+          target: null
+          onWheel: (event) => {
+            var maxY = Math.max(0, diagnosisLogsFlick.contentHeight - diagnosisLogsFlick.height)
+            diagnosisLogsFlick.contentY = Math.max(0, Math.min(maxY, diagnosisLogsFlick.contentY - event.angleDelta.y))
+            event.accepted = true
+          }
+        }
+
+        Text {
+          id: diagnosisLogsText
+          text: root.diagnosisLogsOutput !== "" ? root.diagnosisLogsOutput : "Checking..."
+          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+          wrapMode: Text.WrapAnywhere
+          width: diagnosisLogsFlick.width
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
     Column {
-      visible: root.registryIsDefault && root.skillLinkResult === ""
+      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive
       width: parent.width
       spacing: Style.space(2)
 
       Text {
-        text: "Also point a coding agent at skills/modelmanager/SKILL.md so it"
-          + " can set up your first model - check which one(s) before clicking"
-          + " below (or leave both unchecked and edit "
-          + root.registryJsonPath + " yourself):"
+        text: "Optionally, select one or more coding agents to link the ModelManager SKILL.md into."
         color: root.bar ? root.bar.foreground : Color.foreground
         wrapMode: Text.Wrap
         width: parent.width
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
-      Row {
-        spacing: Style.space(16)
-        LabeledToggle {
-          checked: root.linkClaudeChecked
-          label: "Claude Code"
-          foreground: root.bar ? root.bar.foreground : Color.foreground
-          onToggled: root.linkClaudeChecked = !root.linkClaudeChecked
+      Column {
+        spacing: Style.space(6)
+        Row {
+          spacing: Style.space(16)
+          LabeledToggle {
+            checked: root.linkClaudeChecked
+            label: "Claude Code"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            onToggled: root.linkClaudeChecked = !root.linkClaudeChecked
+          }
+          LabeledToggle {
+            checked: root.linkCodexChecked
+            label: "Codex"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            onToggled: root.linkCodexChecked = !root.linkCodexChecked
+          }
         }
-        LabeledToggle {
-          checked: root.linkCodexChecked
-          label: "Codex"
-          foreground: root.bar ? root.bar.foreground : Color.foreground
-          onToggled: root.linkCodexChecked = !root.linkCodexChecked
+        Row {
+          spacing: Style.space(16)
+          LabeledToggle {
+            checked: root.linkOpenCodeChecked
+            label: "OpenCode"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            onToggled: root.linkOpenCodeChecked = !root.linkOpenCodeChecked
+          }
+          LabeledToggle {
+            checked: root.linkCursorChecked
+            label: "CursorCLI"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            onToggled: root.linkCursorChecked = !root.linkCursorChecked
+          }
+        }
+        Row {
+          spacing: Style.space(16)
+          LabeledToggle {
+            checked: root.linkHermesChecked
+            label: "Hermes"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            onToggled: root.linkHermesChecked = !root.linkHermesChecked
+          }
         }
       }
     }
 
+    Item {
+      visible: root.registryIsDefault && root.skillLinkResult === "" && !root.diagnosisModeActive
+      width: 1
+      height: Style.space(3)
+    }
+
     Column {
-      visible: root.registryIsDefault && root.ollamaRegisterResult === ""
+      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive
       width: parent.width
       spacing: Style.space(2)
 
       Text {
-        text: "Already running Ollama with a model pulled? Register one for a"
-          + " quick first test - doesn't download anything, just points at"
-          + " whichever model Ollama already has:"
+        text: "If you already have an Ollama model running locally, select below to find and register that model as a quick first test:"
         color: root.bar ? root.bar.foreground : Color.foreground
         wrapMode: Text.Wrap
         width: parent.width
@@ -130,6 +296,73 @@ Column {
           onToggled: root.registerOllamaChecked = !root.registerOllamaChecked
         }
       }
+    }
+
+    Item {
+      visible: root.registryIsDefault && root.ollamaRegisterResult === "" && !root.diagnosisModeActive
+      width: 1
+      height: Style.space(3)
+    }
+
+    Column {
+      visible: root.backendUnreachable && root.setupResult !== "ok"
+      width: parent.width
+      spacing: Style.space(2)
+
+      Text {
+        text: "Key files / info:"
+        color: root.bar ? root.bar.foreground : Color.foreground
+        wrapMode: Text.Wrap
+        width: parent.width
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Rectangle {
+        x: Style.space(10)
+        width: parent.width - Style.space(10)
+        height: fileLocationsText.implicitHeight + Style.space(12)
+        radius: Style.cornerRadius
+        color: "transparent"
+        border.width: 1
+        border.color: Qt.rgba((root.bar ? root.bar.foreground : Color.foreground).r,
+          (root.bar ? root.bar.foreground : Color.foreground).g,
+          (root.bar ? root.bar.foreground : Color.foreground).b, 0.25)
+
+        Text {
+          id: fileLocationsText
+          text: "Listen address: " + root.localCoordinatorUrl + "\n"
+            + root.skillDirPath + "/SKILL.md\n" + root.registryJsonPath
+          color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+          wrapMode: Text.WrapAnywhere
+          anchors.left: parent.left
+          anchors.right: copyFileLocationsButton.left
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.space(8)
+          anchors.rightMargin: Style.space(4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        PanelActionButton {
+          id: copyFileLocationsButton
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.rightMargin: Style.space(4)
+          iconText: "󰆏"
+          tooltipText: "Copy to clipboard"
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onClicked: Quickshell.execDetached(["wl-copy", fileLocationsText.text])
+        }
+      }
+    }
+
+    Item {
+      // Extra breathing room before the CTA - the Column's uniform
+      // spacing between the explanatory paragraphs above reads fine
+      // between text lines, but felt too cramped right before the button.
+      width: 1
+      height: Style.space(6)
     }
 
     Row {
@@ -175,9 +408,9 @@ Column {
         Button {
           id: setupButton
           anchors.fill: parent
-          text: root.setupRunning ? "Running setup..." : root.skillLinkRunning ? "Linking..."
+          text: root.setupRunning ? (root.diagnosisModeActive ? "Restarting..." : "Running setup...") : root.skillLinkRunning ? "Linking..."
             : root.ollamaRegisterRunning ? "Registering..."
-            : (root.backendUnreachable ? "Run setup now" : "Apply")
+            : (root.diagnosisModeActive ? "Restart backend service" : (root.backendUnreachable ? "Run setup now" : "Apply"))
           enabled: !root.setupRunning && !root.skillLinkRunning && !root.ollamaRegisterRunning
           bordered: true
           foreground: root.backendUnreachable ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
@@ -227,15 +460,6 @@ Column {
       font.pixelSize: Style.font.caption
     }
 
-    Text {
-      visible: root.backendUnreachable
-      text: "(" + root.lastError + ")"
-      color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
-      wrapMode: Text.Wrap
-      width: parent.width
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-    }
   }
 
   Text {
@@ -268,24 +492,55 @@ Column {
   // children when sizing itself, so this shrinks to just whatever
   // error/trust text is showing instead of leaving this stale behind it.
   Column {
-    visible: !root.hostTrustPromptActive
+    visible: !root.hostTrustPromptActive && !root.firstRunSetupActive
     width: parent.width
     spacing: Style.space(10)
 
     PanelSeparator {}
-    PanelSectionHeader { text: "Stats" }
+
+    Item {
+      id: statsHeaderRow
+      width: parent.width
+      implicitHeight: Math.max(statsHeader.implicitHeight, statsFilterField.implicitHeight)
+      height: implicitHeight
+
+      PanelSectionHeader {
+        id: statsHeader
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Stats"
+      }
+
+      TextField {
+        id: statsFilterField
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(160)
+        verticalPadding: Style.space(2)
+        placeholderText: "filter systems..."
+        foreground: root.bar ? root.bar.foreground : Color.foreground
+        text: root.statsFilter
+        onTextChanged: root.statsFilter = text
+        Keys.onEscapePressed: root.close()
+      }
+    }
 
     Flickable {
       id: statsFlick
       width: parent.width
-      height: Math.min(Style.space(240), contentHeight)
+      // Fixed slot (not Math.min-to-content) so this section takes a
+      // steady, predictable share of the popup's fixed total height
+      // instead of growing with however many systems/GPUs are reporting -
+      // same fixed-slot-that-scrolls treatment as modelsFlick gets from
+      // its own anchors in Panel.qml.
+      height: Style.space(170)
       contentWidth: width
       contentHeight: statsColumn.implicitHeight
       clip: true
       boundsBehavior: Flickable.StopAtBounds
       flickableDirection: Flickable.VerticalFlick
       interactive: contentHeight > height
-      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+      ScrollBar.vertical: PanelScrollBar { handleColor: root.bar ? root.bar.foreground : Color.foreground }
 
       // Same wheel trap as modelsFlick (components/ModelsList.qml) - see
       // its comment.
@@ -300,11 +555,17 @@ Column {
 
       Column {
         id: statsColumn
-        width: statsFlick.width
+        // Narrower than statsFlick itself (not just contentWidth) - the
+        // VRAM bars and system-name/stat Text below all size off this via
+        // `parent.width`, and PanelScrollBar's always-on track sits as an
+        // overlay at the Flickable's own right edge regardless of content
+        // width, so without this gap the usage bars were rendering right
+        // underneath the scroll handle.
+        width: statsFlick.width - Style.space(14)
         spacing: Style.space(10)
 
         Repeater {
-          model: root.filteredSystemNames
+          model: root.displayedSystemNames
           delegate: Column {
             width: statsColumn.width
             spacing: Style.space(4)
