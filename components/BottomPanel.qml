@@ -384,7 +384,13 @@ Column {
 
         Text {
           id: fileLocationsText
-          text: "Listen address: " + root.localCoordinatorUrl + "\n"
+          text: (root.detectedBindHost !== ""
+              ? "Will bind to: " + root.detectedBindHost + (root.detectedBindViaTailscale
+                  ? " (via Tailscale - reachable from your tailnet only)"
+                  : " (this machine only - no active Tailscale detected)")
+                + "\n"
+              : "")
+            + "Listen address: " + root.localCoordinatorUrl + "\n"
             + root.skillDirPath + "/SKILL.md\n" + root.registryJsonPath
           color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
           wrapMode: Text.WrapAnywhere

@@ -118,14 +118,18 @@ token, TLS cert, or env file is left alone).
 Run interactively (not piped, not CI), it also asks two things, each
 skippable:
 
-- Whether to customize the coordinator's listen host/port (default
-  `0.0.0.0:8778`) - writes `~/.config/modelmanager/env`, read by the
-  systemd unit above as an `EnvironmentFile` (see
+- Whether to customize the coordinator's listen host/port. The default it
+  proposes isn't `0.0.0.0` - it detects an active Tailscale IP (via
+  `tailscale ip -4`) and binds to that if found, else falls back to
+  `127.0.0.1` (this machine only); either way it writes
+  `~/.config/modelmanager/env`, read by the systemd unit above as an
+  `EnvironmentFile` (see
   [Authentication & TLS](docs/deployment.md#authentication--tls) for the
-  same mechanism already used for the token/TLS paths). A custom port only takes effect
-  for that systemd-managed process - also set `MODELMANAGER_PORT` wherever
-  the CLI or bar widget run locally (see [Omarchy plugin](#omarchy-plugin));
-  the script says so at the time if you pick a non-default port.
+  same mechanism already used for the token/TLS paths), even if you decline
+  customizing it. A custom port only takes effect for that systemd-managed
+  process - also set `MODELMANAGER_PORT` wherever the CLI or bar widget run
+  locally (see [Omarchy plugin](#omarchy-plugin)); the script says so at the
+  time if you pick a non-default port.
 - Whether to symlink [`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md)
   into a coding agent's personal skills directory (Claude Code, Codex,
   OpenCode, Cursor CLI, Hermes, or skip) - it never does this without

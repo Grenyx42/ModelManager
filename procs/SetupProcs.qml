@@ -11,6 +11,7 @@ Item {
 
   property alias registryDefaultCheckProc: registryDefaultCheckProc
   property alias setupTokenCheckProc: setupTokenCheckProc
+  property alias bindHostDetectProc: bindHostDetectProc
   property alias setupProc: setupProc
   property alias skillLinkProc: skillLinkProc
   property alias ollamaRegisterProc: ollamaRegisterProc
@@ -29,6 +30,21 @@ Item {
     id: setupTokenCheckProc
     command: []
     onExited: (code) => { root.setupPreviouslyDone = (code === 0) }
+  }
+
+  // Mirrors scripts/setup.sh's own detect_default_listen_host() - see
+  // root.checkBindHostPlan(). `tailscale ip -4` exits non-zero when not
+  // logged in/up, so this reads stdout rather than relying on the exit
+  // code (which, piped through head, wouldn't reflect tailscale's anyway).
+  Process {
+    id: bindHostDetectProc
+    command: []
+    stdout: StdioCollector { id: bindHostDetectOut; waitForEnd: true }
+    onExited: (code) => {
+      const ip = bindHostDetectOut.text.trim()
+      root.detectedBindHost = ip !== "" ? ip : "127.0.0.1"
+      root.detectedBindViaTailscale = ip !== ""
+    }
   }
 
   Process {

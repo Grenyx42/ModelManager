@@ -16,15 +16,24 @@ modelmanager serve --port 8778   # binds 0.0.0.0 by default - reachable from sys
 ```
 
 `--host`/`--port` default to the `MODELMANAGER_HOST`/`MODELMANAGER_PORT` env
-vars when set, else `0.0.0.0`/`8778` - a flag always wins over either. Serves
-HTTPS (self-signed cert from `./scripts/setup.sh` - see
+vars when set, else `0.0.0.0`/`8778` - a flag always wins over either. This
+`0.0.0.0` fallback only applies to running `serve` manually with no env var
+set; `./scripts/setup.sh`'s installed systemd unit never relies on it (see
+below). Serves HTTPS (self-signed cert from `./scripts/setup.sh` - see
 [Authentication & TLS](#authentication--tls)) and refuses to start at all if
 that cert doesn't exist yet. Binding `0.0.0.0` means the REST API is
-*reachable* by anything that can reach this box - on this setup that's the
-tailnet, gated by Tailscale itself rather than anything in this app - but
-every request still needs the bearer token below, so reachable isn't the
-same as usable. Pass `--host 127.0.0.1` (or set `MODELMANAGER_HOST=127.0.0.1`)
-instead if you want it local-only as well.
+*reachable* by anything that can reach this box, including a public
+interface - every request still needs the bearer token below, so reachable
+isn't the same as usable, but pass `--host 127.0.0.1` (or set
+`MODELMANAGER_HOST=127.0.0.1`) instead if you want it local-only too, or a
+specific Tailscale/LAN IP to scope it to just that interface.
+
+`./scripts/setup.sh` itself never defaults to `0.0.0.0`: it detects an
+active Tailscale IP (`tailscale ip -4`) and writes that into
+`~/.config/modelmanager/env` as `MODELMANAGER_HOST`, or `127.0.0.1` if
+Tailscale isn't installed/up - reachable from the tailnet or this machine
+only, never the open LAN/internet, unless you explicitly customize it to
+something wider during setup or by hand-editing that env file afterward.
 
 `systemA`'s system entry in `registry.json` needs `"advertise_host": "systemA"`
 (its Tailscale name) for this to actually work end-to-end: without it,

@@ -11,11 +11,14 @@ Type=simple
 # modelmanager/config.py:default_registry_path) - override with
 # MODELMANAGER_REGISTRY here if you keep it somewhere else.
 #
-# The leading "-" makes a missing env file not an error - this file is
-# optional (scripts/setup.sh never creates it). Set MODELMANAGER_HOST/
-# MODELMANAGER_PORT/MODELMANAGER_REGISTRY/etc. in it to override `serve`'s
-# defaults (see cli.py) without editing this unit, then `systemctl --user
-# daemon-reload && systemctl --user restart modelmanager`.
+# The leading "-" makes a missing env file not an error - scripts/setup.sh
+# always writes one (a Tailscale-IP-or-127.0.0.1 MODELMANAGER_HOST, detected
+# at install time) unless it already exists, but this file is still
+# optional from this unit's point of view (e.g. a hand-rolled install with
+# no setup.sh run). Set MODELMANAGER_HOST/MODELMANAGER_PORT/
+# MODELMANAGER_REGISTRY/etc. in it to override `serve`'s defaults (see
+# cli.py) without editing this unit, then `systemctl --user daemon-reload &&
+# systemctl --user restart modelmanager`.
 EnvironmentFile=-%h/.config/modelmanager/env
 ExecStart=%h/.local/share/modelmanager/venv/bin/modelmanager serve
 Restart=on-failure

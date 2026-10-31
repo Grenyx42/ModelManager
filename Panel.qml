@@ -118,6 +118,23 @@ Panel {
     return parts
   }
 
+  // Live elapsed-seconds counter for hostLoadingText below - confirmed this
+  // session that a cold host switch can take 15+s (a fresh TLS handshake
+  // per CLI subprocess invocation, no connection pooling possible across
+  // separate OS processes), so a static "Loading..." sits there unchanged
+  // the whole time, indistinguishable from stuck. Reset the instant there's
+  // nothing in flight; only ticks while hostLoadingParts is non-empty.
+  property int hostLoadingElapsedSec: 0
+  onHostLoadingPartsChanged: {
+    if (root.hostLoadingParts.length === 0) root.hostLoadingElapsedSec = 0
+  }
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.hostLoadingParts.length > 0
+    onTriggered: root.hostLoadingElapsedSec += 1
+  }
+
   function loadKnownHosts() {
     if (!hostsListProc.running) hostsListProc.running = true
   }
@@ -331,6 +348,29 @@ Panel {
   // meaningful alongside backendUnreachable below; set by
   // registryDefaultCheckProc, see checkFreshInstall().
   property bool registryIsDefault: false
+
+  // What scripts/setup.sh will pick as the coordinator's listen address if
+  // the user doesn't customize it - mirrors that script's own detection
+  // (an active Tailscale IP, else 127.0.0.1) so the first-run guidance box
+  // can tell the user *before* they click the button, not just leave it to
+  // setup.sh's own terminal output after the fact. "" until the first
+  // result lands; set by bindHostDetectProc, see checkBindHostPlan().
+  property string detectedBindHost: ""
+  property bool detectedBindViaTailscale: false
+
+  // Cheap, static (for this machine, this session) and only meaningful
+  // pre-setup - same trigger point as checkFreshInstall()/
+  // checkDiagnosisInfo(), but guarded on having an answer already so it
+  // never re-runs once it does (nothing about a Tailscale install changes
+  // moment-to-moment the way reachability/registry state can).
+  function checkBindHostPlan() {
+    if (root.detectedBindHost !== "") return
+    if (bindHostDetectProc.running) return
+    bindHostDetectProc.command = [
+      "sh", "-c", "command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1"
+    ]
+    bindHostDetectProc.running = true
+  }
 
   // Both of lastError's two "the coordinator itself isn't reachable" shapes -
   // see listProc.onExited (mmBin missing/not executable) and parseModels's
@@ -986,6 +1026,7 @@ Panel {
         root.checkFreshInstall()
         root.checkSetupAlreadyDone()
         root.checkDiagnosisInfo()
+        root.checkBindHostPlan()
         return
       }
       models = data
@@ -1213,6 +1254,7 @@ Panel {
   SetupProcs { id: setupProcsGroup; root: root }
   property alias registryDefaultCheckProc: setupProcsGroup.registryDefaultCheckProc
   property alias setupTokenCheckProc: setupProcsGroup.setupTokenCheckProc
+  property alias bindHostDetectProc: setupProcsGroup.bindHostDetectProc
   property alias setupProc: setupProcsGroup.setupProc
   property alias skillLinkProc: setupProcsGroup.skillLinkProc
   property alias ollamaRegisterProc: setupProcsGroup.ollamaRegisterProc
@@ -1390,7 +1432,10 @@ Panel {
           id: hostLoadingText
           anchors.left: parent.left
           anchors.right: parent.right
-          text: root.hostLoadingParts.length > 0 ? ("Loading " + root.hostLoadingParts.join(", ") + "...") : ""
+          text: root.hostLoadingParts.length > 0
+            ? ("Loading " + root.hostLoadingParts.join(", ") + "..."
+              + (root.hostLoadingElapsedSec >= 2 ? " (" + root.hostLoadingElapsedSec + "s)" : ""))
+            : ""
           color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
