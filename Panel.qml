@@ -364,12 +364,15 @@ Panel {
   // never re-runs once it does (nothing about a Tailscale install changes
   // moment-to-moment the way reachability/registry state can).
   function checkBindHostPlan() {
+    console.log("MMDEBUG checkBindHostPlan: detectedBindHost=" + JSON.stringify(root.detectedBindHost)
+      + " procRunning=" + bindHostDetectProc.running)
     if (root.detectedBindHost !== "") return
     if (bindHostDetectProc.running) return
     bindHostDetectProc.command = [
       "sh", "-c", "command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1"
     ]
     bindHostDetectProc.running = true
+    console.log("MMDEBUG checkBindHostPlan: started bindHostDetectProc")
   }
 
   // Both of lastError's two "the coordinator itself isn't reachable" shapes -
