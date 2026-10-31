@@ -24,16 +24,20 @@ below). Serves HTTPS (self-signed cert from `./scripts/setup.sh` - see
 that cert doesn't exist yet. Binding `0.0.0.0` means the REST API is
 *reachable* by anything that can reach this box, including a public
 interface - every request still needs the bearer token below, so reachable
-isn't the same as usable, but pass `--host 127.0.0.1` (or set
-`MODELMANAGER_HOST=127.0.0.1`) instead if you want it local-only too, or a
-specific Tailscale/LAN IP to scope it to just that interface.
+isn't the same as usable, but `--host` (and `MODELMANAGER_HOST`) also accept
+a comma-separated list of addresses to bind instead - e.g.
+`--host 127.0.0.1,100.x.x.x` to bind just this machine plus a specific
+Tailscale/LAN IP, nothing wider. This isn't just a convenience: binding
+*only* a non-loopback address (no `127.0.0.1` at all) breaks every local
+caller, since the CLI's own default URL, the Omarchy bar widget, and
+`./scripts/setup.sh`'s own readiness probe all talk to `127.0.0.1`
+specifically, regardless of what else the coordinator is reachable on.
 
-`./scripts/setup.sh` itself never defaults to `0.0.0.0`: it detects an
-active Tailscale IP (`tailscale ip -4`) and writes that into
-`~/.config/modelmanager/env` as `MODELMANAGER_HOST`, or `127.0.0.1` if
-Tailscale isn't installed/up - reachable from the tailnet or this machine
-only, never the open LAN/internet, unless you explicitly customize it to
-something wider during setup or by hand-editing that env file afterward.
+`./scripts/setup.sh` itself never defaults to `0.0.0.0`: it always binds
+`127.0.0.1`, plus an active Tailscale IP (`tailscale ip -4`) if one's found -
+reachable from the tailnet and this machine, never the open LAN/internet,
+unless you explicitly customize it to something wider during setup or by
+hand-editing that env file afterward.
 
 `systemA`'s system entry in `registry.json` needs `"advertise_host": "systemA"`
 (its Tailscale name) for this to actually work end-to-end: without it,

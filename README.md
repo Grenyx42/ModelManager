@@ -119,11 +119,11 @@ Run interactively (not piped, not CI), it also asks two things, each
 skippable:
 
 - Whether to customize the coordinator's listen host/port. The default it
-  proposes isn't `0.0.0.0` - it detects an active Tailscale IP (via
-  `tailscale ip -4`) and binds to that if found, else falls back to
-  `127.0.0.1` (this machine only); either way it writes
-  `~/.config/modelmanager/env`, read by the systemd unit above as an
-  `EnvironmentFile` (see
+  proposes isn't `0.0.0.0` - it always binds `127.0.0.1` (needed by the CLI/
+  bar widget, which only ever talk to that address locally) and additionally
+  binds an active Tailscale IP if `tailscale ip -4` finds one, reachable from
+  your tailnet too; either way it writes `~/.config/modelmanager/env`, read
+  by the systemd unit above as an `EnvironmentFile` (see
   [Authentication & TLS](docs/deployment.md#authentication--tls) for the
   same mechanism already used for the token/TLS paths), even if you decline
   customizing it. A custom port only takes effect for that systemd-managed

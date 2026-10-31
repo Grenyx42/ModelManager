@@ -129,17 +129,21 @@ fi
 #
 # 0.0.0.0 is a bad default for a REST API whose only protection is a bearer
 # token - it's reachable by anything that can reach this box, including a
-# public interface on a cloud/VPS install. Prefer binding only to this
-# machine's Tailscale IP when Tailscale is installed and up (reachable from
-# the tailnet, nothing wider); fall back to 127.0.0.1 (this machine only)
-# when it isn't. `tailscale ip -4` exits non-zero when not logged in/up, so
-# check its output rather than its exit code.
+# public interface on a cloud/VPS install. Prefer binding 127.0.0.1 (always -
+# the CLI/bar widget/this very script's own readiness probe below all
+# default to it, so it can never be dropped) plus this machine's Tailscale
+# IP when Tailscale is installed and up (reachable from the tailnet too,
+# nothing wider); just 127.0.0.1 alone when it isn't. cli.py's `serve`
+# accepts a comma-separated --host/MODELMANAGER_HOST for exactly this -
+# binds one uvicorn listener per address, never a single 0.0.0.0 catch-all.
+# `tailscale ip -4` exits non-zero when not logged in/up, so check its
+# output rather than its exit code.
 detect_default_listen_host() {
   if command -v tailscale >/dev/null 2>&1; then
     local ts_ip
     ts_ip="$(tailscale ip -4 2>/dev/null | head -n1)"
     if [[ -n "$ts_ip" ]]; then
-      echo "$ts_ip"
+      echo "127.0.0.1,$ts_ip"
       return
     fi
   fi
@@ -154,14 +158,14 @@ else
   if [[ "$DEFAULT_LISTEN_HOST" == "127.0.0.1" ]]; then
     echo "No active Tailscale IP detected - the coordinator will bind to 127.0.0.1 (this machine only)."
   else
-    echo "Detected an active Tailscale IP ($DEFAULT_LISTEN_HOST) - the coordinator will bind to it (reachable over your tailnet only, not the open LAN/internet)."
+    echo "Detected an active Tailscale IP (${DEFAULT_LISTEN_HOST#*,}) - the coordinator will bind to 127.0.0.1 and that IP (this machine, plus your tailnet - nothing wider)."
   fi
   LISTEN_HOST="$DEFAULT_LISTEN_HOST"
   LISTEN_PORT="8778"
   if [[ -t 0 && -t 1 ]]; then
-    read -r -p "Customize the coordinator's listen address? (default $LISTEN_HOST:8778) [y/N]: " CUSTOMIZE_LISTEN || CUSTOMIZE_LISTEN="n"
+    read -r -p "Customize the coordinator's listen address? (default $LISTEN_HOST, port 8778) [y/N]: " CUSTOMIZE_LISTEN || CUSTOMIZE_LISTEN="n"
     if [[ "$CUSTOMIZE_LISTEN" =~ ^[Yy]$ ]]; then
-      read -r -p "  Host [$LISTEN_HOST]: " INPUT_HOST || INPUT_HOST=""
+      read -r -p "  Host (comma-separated to bind more than one, e.g. 127.0.0.1,100.x.x.x) [$LISTEN_HOST]: " INPUT_HOST || INPUT_HOST=""
       read -r -p "  Port [8778]: " INPUT_PORT || INPUT_PORT=""
       LISTEN_HOST="${INPUT_HOST:-$LISTEN_HOST}"
       LISTEN_PORT="${INPUT_PORT:-8778}"

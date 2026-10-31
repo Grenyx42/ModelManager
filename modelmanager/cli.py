@@ -120,15 +120,70 @@ def cmd_serve(args) -> int:
         }))
         return 1
 
-    uvicorn.run(
+    # --host (and MODELMANAGER_HOST, which scripts/setup.sh writes) may be a
+    # comma-separated list of addresses to bind, not just one - needed
+    # because every local caller (this file's own DEFAULT_URL above, the
+    # Omarchy bar widget, scripts/setup.sh's own readiness probe) always
+    # talks to https://127.0.0.1:<port>, regardless of what else the
+    # coordinator is reachable on. Binding *only* to a Tailscale IP (which
+    # scripts/setup.sh now detects and prefers over 0.0.0.0) would silently
+    # break every one of those unless 127.0.0.1 stays bound too.
+    hosts = [h.strip() for h in args.host.split(",") if h.strip()] or ["127.0.0.1"]
+    if len(hosts) == 1:
+        # uvicorn.run() only ever binds one address - this is the common
+        # case (a plain --host/MODELMANAGER_HOST value, e.g. the "no
+        # Tailscale" 127.0.0.1 default, or an explicit manual override) and
+        # the only one that supports --reload, so it keeps using uvicorn's
+        # own convenience entrypoint unchanged rather than the multi-Server
+        # path below.
+        uvicorn.run(
+            "modelmanager.coordinator.app:app",
+            host=hosts[0],
+            port=args.port,
+            reload=args.reload,
+            access_log=False,  # replaced by our own middleware -> access.log (timestamps, duration)
+            ssl_certfile=str(cert_path),
+            ssl_keyfile=str(key_path),
+        )
+        return 0
+
+    if args.reload:
+        print(json.dumps({
+            "error": "--reload isn't supported together with multiple --host addresses",
+            "code": "RELOAD_MULTI_HOST",
+        }))
+        return 1
+
+    # More than one address: bind one raw socket per address ourselves and
+    # hand them all to a *single* uvicorn.Server/Config - critically, still
+    # just one FastAPI `app` lifespan (see app.py's lifespan()), so there's
+    # still exactly one Manager/Scheduler/pinned-model-ensure/etc for the
+    # whole process. An earlier version of this ran one full Server (and
+    # therefore one full lifespan) per address via asyncio.gather() instead -
+    # that's wrong, not just wasteful: two independent Managers for the same
+    # registry.json raced each other (duplicate pinned-model ensure calls,
+    # duplicate health-check/scheduler loops) and in practice just hung both
+    # at startup. uvicorn.Server.run(sockets=...) is the documented way to
+    # serve one app on multiple listeners.
+    import socket as socket_module
+
+    sockets = []
+    for h in hosts:
+        family = socket_module.AF_INET6 if ":" in h else socket_module.AF_INET
+        sock = socket_module.socket(family, socket_module.SOCK_STREAM)
+        sock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+        sock.bind((h, args.port))
+        sock.set_inheritable(True)
+        sockets.append(sock)
+
+    config = uvicorn.Config(
         "modelmanager.coordinator.app:app",
-        host=args.host,
         port=args.port,
-        reload=args.reload,
-        access_log=False,  # replaced by our own middleware -> access.log (timestamps, duration)
+        access_log=False,
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),
     )
+    uvicorn.Server(config).run(sockets=sockets)
     return 0
 
 
@@ -858,7 +913,11 @@ def cli(ctx: click.Context, url: str, token: str | None, peer: str | None) -> No
 
 
 @cli.command("serve", help="run the coordinator REST service")
-@click.option("--host", default=DEFAULT_SERVE_HOST, help="defaults to MODELMANAGER_HOST env, else 0.0.0.0")
+@click.option(
+    "--host", default=DEFAULT_SERVE_HOST,
+    help="comma-separated to bind more than one address (e.g. 127.0.0.1,100.x.x.x) - "
+         "defaults to MODELMANAGER_HOST env, else 0.0.0.0",
+)
 @click.option("--port", type=int, default=DEFAULT_SERVE_PORT, help="defaults to MODELMANAGER_PORT env, else 8778")
 @click.option("--reload", is_flag=True)
 @click.pass_context

@@ -384,13 +384,16 @@ Column {
 
         Text {
           id: fileLocationsText
+          // 127.0.0.1 is always included alongside any detected Tailscale
+          // IP (never replaced by it) - the CLI/bar widget below always
+          // talk to 127.0.0.1, so dropping it would break local control.
           text: (root.detectedBindHost !== ""
-              ? "Will bind to: " + root.detectedBindHost + (root.detectedBindViaTailscale
-                  ? " (via Tailscale - reachable from your tailnet only)"
-                  : " (this machine only - no active Tailscale detected)")
+              ? "Will bind to: " + (root.detectedBindViaTailscale
+                  ? "127.0.0.1 and " + root.detectedBindHost + " (this machine, plus your tailnet via Tailscale)"
+                  : "127.0.0.1 (this machine only - no active Tailscale detected)")
                 + "\n"
               : "")
-            + "Listen address: " + root.localCoordinatorUrl + "\n"
+            + "Local CLI/plugin URL: " + root.localCoordinatorUrl + "\n"
             + root.skillDirPath + "/SKILL.md\n" + root.registryJsonPath
           color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
           wrapMode: Text.WrapAnywhere
