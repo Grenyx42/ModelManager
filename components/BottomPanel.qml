@@ -498,8 +498,8 @@ Column {
       visible: root.setupResult === "ok" && root.registryIsDefault
         && root.skillLinkResult !== "" && root.ollamaRegisterResult !== ""
       text: "Setup complete and the backend is running. Describe your first system and model - via a linked"
-        + " coding agent or the modelmanager CLI - then reopen this panel; it'll switch over to the normal"
-        + " view automatically once something's configured."
+        + " coding agent or the modelmanager CLI - and the panel will automatically refresh once something's"
+        + " configured."
       color: root.bar ? root.bar.foreground : Color.foreground
       wrapMode: Text.Wrap
       width: parent.width
