@@ -359,20 +359,18 @@ Panel {
   property bool detectedBindViaTailscale: false
 
   // Cheap, static (for this machine, this session) and only meaningful
-  // pre-setup - same trigger point as checkFreshInstall()/
-  // checkDiagnosisInfo(), but guarded on having an answer already so it
-  // never re-runs once it does (nothing about a Tailscale install changes
-  // moment-to-moment the way reachability/registry state can).
+  // pre-setup - triggered from the always-running refresh Timer below
+  // (deliberately *not* from parseModels()'s "coordinator unreachable"
+  // branch - see that Timer's own comment for why), guarded on having an
+  // answer already so it never re-runs once it does (nothing about a
+  // Tailscale install changes moment-to-moment the way reachability does).
   function checkBindHostPlan() {
-    console.log("MMDEBUG checkBindHostPlan: detectedBindHost=" + JSON.stringify(root.detectedBindHost)
-      + " procRunning=" + bindHostDetectProc.running)
     if (root.detectedBindHost !== "") return
     if (bindHostDetectProc.running) return
     bindHostDetectProc.command = [
       "sh", "-c", "command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1"
     ]
     bindHostDetectProc.running = true
-    console.log("MMDEBUG checkBindHostPlan: started bindHostDetectProc")
   }
 
   // Both of lastError's two "the coordinator itself isn't reachable" shapes -
@@ -1029,7 +1027,6 @@ Panel {
         root.checkFreshInstall()
         root.checkSetupAlreadyDone()
         root.checkDiagnosisInfo()
-        root.checkBindHostPlan()
         return
       }
       models = data
@@ -1174,7 +1171,23 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refresh()
+    onTriggered: {
+      root.refresh()
+      // Deliberately not gated on refresh() actually reaching the
+      // coordinator - unlike checkFreshInstall()/checkDiagnosisInfo(),
+      // this only depends on whether Tailscale is installed on *this*
+      // machine, which is true or false independent of whether the
+      // modelmanager binary/venv even exists yet. Firing it from
+      // parseModels()'s "coordinator unreachable" branch alone (as this
+      // originally did) meant it could never run on a genuinely fresh
+      // install - no venv yet means `modelmanager list` itself fails to
+      // launch (exit 126/127, a different error path entirely - see
+      // DataProcs.qml's listProc.onExited), so the one case this feature
+      // most needs to cover (showing the planned bind address *before*
+      // the user ever clicks "Run setup now") was exactly the case it
+      // silently never ran in.
+      root.checkBindHostPlan()
+    }
   }
 
   // Runs regardless of refreshIntervalSec and whether the panel is open, at

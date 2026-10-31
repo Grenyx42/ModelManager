@@ -42,7 +42,6 @@ Item {
     stdout: StdioCollector { id: bindHostDetectOut; waitForEnd: true }
     onExited: (code) => {
       const ip = bindHostDetectOut.text.trim()
-      console.log("MMDEBUG bindHostDetectProc.onExited: code=" + code + " ip=" + JSON.stringify(ip))
       root.detectedBindHost = ip !== "" ? ip : "127.0.0.1"
       root.detectedBindViaTailscale = ip !== ""
     }
