@@ -7,6 +7,10 @@ talk to, without caring whether it's already loaded, which box it's on, or
 what has to be evicted first to make room. An Omarchy bar plugin sits on top
 of the same REST API for a point-and-click view of what's running.
 
+Related models can also be grouped into one named stack - `ensure`, `verify`,
+and `stop` a whole multi-model workflow (e.g. a reasoning model plus an
+embedding model, on different boxes) with one call instead of one per model.
+
 It works solo - a handful of your own GPU boxes (Linux, Windows), each
 running one or more LLM engines (Ollama, custom llama.cpp builds) - and it
 works shared: grant someone else on your Tailscale tailnet or LAN scoped,
@@ -31,7 +35,9 @@ which box happens to have `qwen-72b` loaded this week.
 - It's a small REST coordinator: apps call `ensure("model-name")`, it starts
   (or swaps in) whichever engine/box combo serves that model, and hands back
   `{host, port}`. It does **not** sit in the inference request path - your
-  app talks to the engine directly after that.
+  app talks to the engine directly after that. `ensure` only confirms the
+  process is loaded; call `verify` when you need confirmation it's actually
+  answering a real inference request, not just that it started.
 - It assumes a **trusted private network** (e.g. your own LAN or a Tailscale
   tailnet) between your boxes, and SSH between the coordinator and any remote
   system is a local environment decision you make yourself (non-interactive
