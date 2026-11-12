@@ -7,10 +7,6 @@ talk to, without caring whether it's already loaded, which box it's on, or
 what has to be evicted first to make room. An Omarchy bar plugin sits on top
 of the same REST API for a point-and-click view of what's running.
 
-Related models can also be grouped into one named stack - `ensure`, `verify`,
-and `stop` a whole multi-model workflow (e.g. a reasoning model plus an
-embedding model, on different boxes) with one call instead of one per model.
-
 It works solo - a handful of your own GPU boxes (Linux, Windows), each
 running one or more LLM engines (Ollama, custom llama.cpp builds) - and it
 works shared: grant someone else on your Tailscale tailnet or LAN scoped,
@@ -30,6 +26,21 @@ which box happens to have `qwen-72b` loaded this week.
 > since made it my own and will keep extending it by hand, so don't be
 > surprised if some corners read more "assistant" than "human" for a while.
 
+## Quick start
+
+```bash
+./scripts/setup.sh
+```
+
+That builds the runtime venv, a REST bearer token, and a self-signed TLS
+cert, then installs and starts the coordinator as a systemd user service -
+see [Setup](#setup) below for exactly what it does and its interactive
+prompts. From there, point a coding agent at
+[`skills/modelmanager/SKILL.md`](skills/modelmanager/SKILL.md) to register
+your first model, or edit `registry.json` by hand (see
+`registry.example.json`), then run `modelmanager doctor --pretty` to confirm
+it's wired up.
+
 ## What it is / isn't
 
 - It's a small REST coordinator: apps call `ensure("model-name")`, it starts
@@ -38,6 +49,10 @@ which box happens to have `qwen-72b` loaded this week.
   app talks to the engine directly after that. `ensure` only confirms the
   process is loaded; call `verify` when you need confirmation it's actually
   answering a real inference request, not just that it started.
+- Related models can also be grouped into one named stack - `ensure`,
+  `verify`, and `stop` a whole multi-model workflow (e.g. a reasoning model
+  plus an embedding model, on different boxes) with one call instead of one
+  per model.
 - It assumes a **trusted private network** (e.g. your own LAN or a Tailscale
   tailnet) between your boxes, and SSH between the coordinator and any remote
   system is a local environment decision you make yourself (non-interactive
