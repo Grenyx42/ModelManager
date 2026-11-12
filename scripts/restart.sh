@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stops and restarts the ModelManager coordinator on this box (sleek).
+# Stops and restarts the ModelManager coordinator on this box.
 # Pure Python app - no build step, just the venv's console script.
 set -euo pipefail
 

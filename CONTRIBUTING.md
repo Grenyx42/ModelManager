@@ -2,19 +2,8 @@
 
 Thanks for taking a look. This started as a personal home-lab tool, so a few
 things are still tuned for that - PRs that generalize things are welcome.
-
-# Built fast. Please break it.
-
-I built this the way a lot of us build now - a spec and then a working prototype in 30 minutes.  It got useful **really fast** because I'm always tinkering with what models can fit on my GPUs and work together.  It is almost certainly missing something obvious I didn't think of yet.  If you find a missing feature, weird edge case, or something that makes you say *"Dude... how did you not add this?"* - open an issue.  
-
-Really.
-
-We're living in a world where a feature that used to mean "maybe I can build that next weekend" can usually mean "give me five minutes". So don't assume something is too small, too weird, or too much trouble to suggest.
-
-This is a tool for people experimenting with local AI, built using the same tools we're all experimenting with.
-
-**Find the gaps. Break stuff. Suggest things. Let's make it better.**
-
+It's still young and was built fast, so if something's missing, weird, or
+just plain broken, open an issue no matter how small it seems.
 
 ## Architecture: one coordinator, SSH out
 

@@ -12,8 +12,8 @@
 # dev-only file - .git, .venv, registry.json - would sit inside the plugin
 # folder too), this rsyncs just the plugin-relevant files across. Re-run
 # after editing Panel.qml to pick up the change (hot-reload-on-symlink
-# wasn't reliable here anyway - see the "Editing Panel.qml" note in the
-# README).
+# wasn't reliable here anyway - see the "Editing Panel.qml" note in
+# CONTRIBUTING.md).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
