@@ -253,13 +253,13 @@ omarchy bar set <id> refreshIntervalSec 30 --json
 **Keybinding:** there's no manifest field or plugin-level mechanism for
 registering a global hotkey - Hyprland keybindings are entirely yours to
 own, in `~/.config/hypr/bindings.lua`. The plugin already exposes
-`open`/`close`/`toggle` over Quickshell's IPC (`ipcTarget: "slideout.modelmanager"`,
+`open`/`close`/`toggle` over Quickshell's IPC (`ipcTarget: "io.github.grenyx42.modelmanager"`,
 inherited from the base `Panel` type - no code here needed to support this),
 so toggling the panel from a key is one line, the same pattern any other
 Omarchy plugin uses:
 
 ```lua
-o.bind("SUPER + ALT + M", "ModelManager", "omarchy-shell shell toggle slideout.modelmanager")
+o.bind("SUPER + ALT + M", "ModelManager", "omarchy-shell shell toggle io.github.grenyx42.modelmanager")
 ```
 
 Pick whatever key you like - `omarchy menu keybindings --print` shows

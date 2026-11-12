@@ -14,8 +14,8 @@ import "components"
 // the first-party `agents` plugin uses for its usage collectors.
 Panel {
   id: root
-  moduleName: "slideout.modelmanager"
-  ipcTarget: "slideout.modelmanager"
+  moduleName: "io.github.grenyx42.modelmanager"
+  ipcTarget: "io.github.grenyx42.modelmanager"
 
   // The bar host sizes our slot in the row from OUR implicitWidth/Height -
   // Item defaults those to 0, and BarIconButton's anchors.fill: parent then
