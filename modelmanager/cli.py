@@ -601,10 +601,21 @@ def _print_gpus_pretty(gpus: list[dict], c, indent: str = "  ") -> None:
         )
 
 
+def _print_cpu_pretty(cpu: dict, c, indent: str = "  ") -> None:
+    pct = cpu.get("utilization_pct")
+    bar_color = "red" if pct is not None and pct >= 90 else ("yellow" if pct is not None and pct >= 50 else "green")
+    print(
+        f"{indent}" + c(f"CPU {pct}%", bar_color)
+        + "  " + c(f"RAM {cpu.get('memory_used_mb')}/{cpu.get('memory_total_mb')}MB", "dim")
+    )
+
+
 def _print_stats_pretty(body: dict) -> None:
     c = _make_colorizer()
     if "results" not in body:
         _print_gpus_pretty(body.get("gpus", []), c)
+        if body.get("cpu"):
+            _print_cpu_pretty(body["cpu"], c)
         return
     if "group" in body:
         print(c(body["group"], "bold", "cyan"))
@@ -616,6 +627,8 @@ def _print_stats_pretty(body: dict) -> None:
         print(label)
         if result.get("ok"):
             _print_gpus_pretty(result.get("gpus") or [], c, indent="    ")
+            if result.get("cpu"):
+                _print_cpu_pretty(result["cpu"], c, indent="    ")
         else:
             print(c(f"    {result.get('detail')}", "yellow"))
 

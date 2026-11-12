@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from .. import access_log, agent_deploy, gpu_stats, lifecycle_log
+from .. import access_log, agent_deploy, cpu_stats, gpu_stats, lifecycle_log
 from ..adapters.factory import build_runner
 from ..errors import ForbiddenError, ModelManagerError, NotFoundError
 from ..schema_help import API_VERSION, build_help
@@ -259,9 +259,10 @@ def all_systems_stats(request: Request):
             runner_cache[system_name] = build_runner(registry.systems[system_name])
         try:
             gpus = gpu_stats.gpu_stats(runner_cache[system_name])
-            results.append({"system": system_name, "ok": True, "gpus": gpus, "detail": None})
+            cpu = cpu_stats.cpu_stats(runner_cache[system_name], registry.systems[system_name].os)
+            results.append({"system": system_name, "ok": True, "gpus": gpus, "cpu": cpu, "detail": None})
         except (RuntimeError, ModelManagerError) as exc:
-            results.append({"system": system_name, "ok": False, "gpus": None, "detail": str(exc)})
+            results.append({"system": system_name, "ok": False, "gpus": None, "cpu": None, "detail": str(exc)})
     return {"results": results}
 
 
@@ -398,13 +399,18 @@ def group_stats(name: str, request: Request):
             runner_cache[system_name] = build_runner(registry.systems[system_name])
         try:
             gpus = gpu_stats.gpu_stats(runner_cache[system_name])
-            results.append({"system": system_name, "models": model_names, "ok": True, "gpus": gpus, "detail": None})
+            cpu = cpu_stats.cpu_stats(runner_cache[system_name], registry.systems[system_name].os)
+            results.append(
+                {"system": system_name, "models": model_names, "ok": True, "gpus": gpus, "cpu": cpu, "detail": None}
+            )
         except (RuntimeError, ModelManagerError) as exc:
             # Catches HostUnreachableError/CommandTimeoutError too (raised by
             # SSHRunner itself, not just gpu_stats.py's own RuntimeError) -
             # one unreachable system must stay a per-system soft failure, not
             # take down the whole group's stats report.
-            results.append({"system": system_name, "models": model_names, "ok": False, "gpus": None, "detail": str(exc)})
+            results.append(
+                {"system": system_name, "models": model_names, "ok": False, "gpus": None, "cpu": None, "detail": str(exc)}
+            )
     return {"group": name, "results": results}
 
 
@@ -440,7 +446,10 @@ def system_stats(name: str, request: Request):
     # CommandTimeoutError (the SSH connection itself) all propagate straight
     # to the ModelManagerError handler - one consistent {error, code} body
     # regardless of which kind of SSH problem it was.
-    return {"gpus": gpu_stats.gpu_stats(runner_cache[name])}
+    return {
+        "gpus": gpu_stats.gpu_stats(runner_cache[name]),
+        "cpu": cpu_stats.cpu_stats(runner_cache[name], registry.systems[name].os),
+    }
 
 
 @router.get("/v1/status/summary")

@@ -19,7 +19,7 @@ modelmanager stop qwen-7b                # --force to stop even if a lease is he
 modelmanager logs qwen-7b --lines 100
 modelmanager log-path qwen-7b     # {system,control,os,ssh_host,path} - where its logs actually live, for tailing directly
 modelmanager systems              # configured systems
-modelmanager stats systemB --pretty       # GPU/VRAM via nvidia-smi (local or SSH)
+modelmanager stats systemB --pretty       # GPU/VRAM via nvidia-smi, CPU/RAM via /proc or CIM (local or SSH)
 modelmanager help                 # full registry schema + API reference, for agents/scripts
 modelmanager version              # API/wire-contract version
 modelmanager validate @registry.json      # check a full registry document without applying it (catches every error in one pass)

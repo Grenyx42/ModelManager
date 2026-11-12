@@ -11,6 +11,11 @@ NVIDIA_SMI_CMD = (
 
 def gpu_stats(runner: Runner, timeout: float = 15) -> list[dict]:
     result = runner.run_shell(NVIDIA_SMI_CMD, timeout=timeout)
+    if result.returncode == 127:
+        # Standard shell "command not found" exit code, same whether the
+        # shell ran locally or over SSH - a CPU-only box (no NVIDIA card,
+        # nothing to install) isn't a failure, just zero GPUs.
+        return []
     if not result.ok:
         raise CommandFailedError(f"nvidia-smi failed: {result.stderr.strip() or result.stdout.strip()}")
     gpus = []

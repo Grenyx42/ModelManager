@@ -987,7 +987,7 @@ Panel {
       var results = (data && data.results) || []
       for (var i = 0; i < results.length; i++) {
         var r = results[i]
-        copy[r.system] = { gpus: r.ok ? r.gpus : null, error: r.ok ? "" : (r.detail || "unknown error") }
+        copy[r.system] = { gpus: r.ok ? r.gpus : null, cpu: r.ok ? r.cpu : null, error: r.ok ? "" : (r.detail || "unknown error") }
       }
       root.systemStats = copy
     } catch (e) {

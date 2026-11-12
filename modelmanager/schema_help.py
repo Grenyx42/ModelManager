@@ -285,7 +285,7 @@ def build_help() -> dict:
             {"method": "GET", "path": "/v1/systems", "description": "list all systems"},
             {"method": "GET", "path": "/v1/systems/{name}", "description": "get one system"},
             {"method": "POST", "path": "/v1/systems/{name}", "description": "create or update a system. Body: the system schema above.", "body_schema": "system"},
-            {"method": "GET", "path": "/v1/systems/{name}/stats", "description": "GPU/VRAM stats for a system (nvidia-smi, local or over SSH)"},
+            {"method": "GET", "path": "/v1/systems/{name}/stats", "description": "GPU/VRAM (nvidia-smi) and CPU/RAM stats for a system. Returns {gpus: [...], cpu: {utilization_pct, memory_used_mb, memory_total_mb}}, local or over SSH"},
             {
                 "method": "POST",
                 "path": "/v1/systems/{name}/deploy-agent",
@@ -425,11 +425,12 @@ def build_help() -> dict:
                 "method": "GET",
                 "path": "/v1/groups/{name}/stats",
                 "description": (
-                    "GPU/VRAM stats for every distinct system behind the group's members - one entry per "
-                    "system, not per model, since more than one member can share a box. Each member's "
-                    "system is its active candidate's if running, else its first candidate's. Returns "
-                    "{group, results: [{system, models: [...], ok, gpus, detail}, ...]}, same best-effort "
-                    "semantics as the other group endpoints (one system's failure doesn't block the rest)."
+                    "GPU/VRAM and CPU/RAM stats for every distinct system behind the group's members - one "
+                    "entry per system, not per model, since more than one member can share a box. Each "
+                    "member's system is its active candidate's if running, else its first candidate's. "
+                    "Returns {group, results: [{system, models: [...], ok, gpus, cpu, detail}, ...]}, same "
+                    "best-effort semantics as the other group endpoints (one system's failure doesn't block "
+                    "the rest)."
                 ),
             },
         ],

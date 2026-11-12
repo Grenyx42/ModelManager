@@ -326,6 +326,11 @@ def test_group_stats_best_effort_across_systems(tmp_path, monkeypatch):
         return [{"index": 0, "name": "fake-gpu", "memory_used_mb": 1, "memory_total_mb": 2, "utilization_pct": 3, "temperature_c": 4}]
 
     monkeypatch.setattr(routes_module.gpu_stats, "gpu_stats", fake_gpu_stats)
+    # Same fake-runner trick as gpu_stats above - without this, the real
+    # cpu_stats() would call .run_shell() on the plain "sleek" string stub.
+    monkeypatch.setattr(
+        routes_module.cpu_stats, "cpu_stats", lambda runner, os_type, timeout=15: {"utilization_pct": 7, "memory_used_mb": 8, "memory_total_mb": 9}
+    )
 
     resp = client.get("/v1/groups/g1/stats")
 
@@ -336,8 +341,10 @@ def test_group_stats_best_effort_across_systems(tmp_path, monkeypatch):
     assert by_system["sleek"]["ok"] is True
     assert by_system["sleek"]["models"] == ["model-b"]
     assert by_system["sleek"]["gpus"][0]["name"] == "fake-gpu"
+    assert by_system["sleek"]["cpu"] == {"utilization_pct": 7, "memory_used_mb": 8, "memory_total_mb": 9}
     assert by_system["monolith"]["ok"] is False
     assert by_system["monolith"]["models"] == ["model-remote"]
+    assert by_system["monolith"]["cpu"] is None
     assert "ssh unreachable" in by_system["monolith"]["detail"]
 
 
@@ -354,6 +361,9 @@ def test_all_systems_stats_is_best_effort_across_systems(tmp_path, monkeypatch):
         return [{"index": 0, "name": "fake-gpu", "memory_used_mb": 1, "memory_total_mb": 2, "utilization_pct": 3, "temperature_c": 4}]
 
     monkeypatch.setattr(routes_module.gpu_stats, "gpu_stats", fake_gpu_stats)
+    monkeypatch.setattr(
+        routes_module.cpu_stats, "cpu_stats", lambda runner, os_type, timeout=15: {"utilization_pct": 7, "memory_used_mb": 8, "memory_total_mb": 9}
+    )
 
     resp = client.get("/v1/systems/stats")
 
@@ -361,7 +371,9 @@ def test_all_systems_stats_is_best_effort_across_systems(tmp_path, monkeypatch):
     by_system = {r["system"]: r for r in resp.json()["results"]}
     assert by_system["sleek"]["ok"] is True
     assert by_system["sleek"]["gpus"][0]["name"] == "fake-gpu"
+    assert by_system["sleek"]["cpu"] == {"utilization_pct": 7, "memory_used_mb": 8, "memory_total_mb": 9}
     assert by_system["monolith"]["ok"] is False
+    assert by_system["monolith"]["cpu"] is None
     assert "ssh unreachable" in by_system["monolith"]["detail"]
 
 
@@ -371,6 +383,22 @@ def test_group_stats_unknown_group_returns_404(tmp_path):
     resp = client.get("/v1/groups/no-such-group/stats")
 
     assert resp.status_code == 404
+
+
+def test_system_stats_includes_cpu_alongside_gpus(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+
+    monkeypatch.setattr(routes_module.gpu_stats, "gpu_stats", lambda runner, timeout=15: [])
+    monkeypatch.setattr(
+        routes_module.cpu_stats,
+        "cpu_stats",
+        lambda runner, os_type, timeout=15: {"utilization_pct": 12, "memory_used_mb": 345, "memory_total_mb": 678},
+    )
+
+    resp = client.get("/v1/systems/sleek/stats")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"gpus": [], "cpu": {"utilization_pct": 12, "memory_used_mb": 345, "memory_total_mb": 678}}
 
 
 def test_system_stats_surfaces_command_failure_cleanly(tmp_path, monkeypatch):

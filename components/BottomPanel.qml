@@ -795,6 +795,35 @@ Column {
               wrapMode: Text.Wrap
               width: parent.width
             }
+
+            // A successful sweep with zero GPUs (CPU-only box, no NVIDIA
+            // card) is distinct from the error/loading case above - say so
+            // explicitly instead of leaving an unexplained blank gap where
+            // the GPU bars would otherwise be.
+            Text {
+              visible: root.systemStats[modelData] && root.systemStats[modelData].gpus && root.systemStats[modelData].gpus.length === 0
+              text: "No GPU detected (CPU only)"
+              color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              width: parent.width
+            }
+
+            // Reported for every system, GPU or not - a CPU-only box still
+            // has real numbers worth showing instead of just the "No GPU"
+            // line above it.
+            Text {
+              visible: root.systemStats[modelData] && root.systemStats[modelData].cpu
+              text: (root.systemStats[modelData] && root.systemStats[modelData].cpu)
+                ? ("CPU " + root.systemStats[modelData].cpu.utilization_pct + "%   RAM "
+                   + root.systemStats[modelData].cpu.memory_used_mb + " / "
+                   + root.systemStats[modelData].cpu.memory_total_mb + " MB")
+                : ""
+              color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              width: parent.width
+            }
           }
         }
       }
