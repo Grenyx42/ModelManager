@@ -25,7 +25,11 @@ class Scheduler:
     async def _run(self) -> None:
         while True:
             try:
-                self.sweep_once()
+                # sweep_once() can call probe_busy() -> adapter.busy(), which
+                # does blocking I/O (SSH subprocess, synchronous httpx) - off
+                # the event loop so a slow/unreachable system stalls only
+                # this tick's thread, not every in-flight REST request.
+                await asyncio.to_thread(self.sweep_once)
             except Exception:
                 logger.exception("idle sweep failed")
             await asyncio.sleep(self.interval_seconds)
@@ -99,7 +103,10 @@ class ActivityTracker:
     async def _run(self) -> None:
         while True:
             try:
-                self.check_once()
+                # probe_busy() -> adapter.busy() is a blocking httpx call per
+                # active model - off the event loop, same reasoning as
+                # Scheduler._run above.
+                await asyncio.to_thread(self.check_once)
             except Exception:
                 logger.exception("activity tracking failed")
             await asyncio.sleep(self.interval_seconds)
@@ -170,7 +177,12 @@ class HealthChecker:
     async def _run(self) -> None:
         while True:
             try:
-                self.check_once()
+                # adapter.status() is a blocking call per active model - an
+                # SSH subprocess (up to 60s, see windows_agent.invoke) or a
+                # synchronous httpx request. Off the event loop, so one slow
+                # or unreachable system stalls only this tick's thread rather
+                # than freezing every in-flight REST request for minutes.
+                await asyncio.to_thread(self.check_once)
             except Exception:
                 logger.exception("health check tick failed")
             await asyncio.sleep(self.interval_seconds)

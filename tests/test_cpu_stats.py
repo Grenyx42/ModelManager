@@ -69,8 +69,12 @@ def test_cpu_stats_linux_command_failure_raises():
         cpu_stats.cpu_stats(runner, "linux")
 
 
-def test_cpu_stats_windows_parses_comma_separated_output():
-    runner = FakeRunner(CommandResult(0, "23,3456,8192\n", ""))
+def test_cpu_stats_windows_parses_newline_separated_output():
+    # PowerShell auto-outputs bare trailing expressions ($cpu; $used; $total)
+    # one per line - confirmed directly against a real box that a quoted,
+    # comma-joined Write-Output string loses its quotes in the SSH -> remote
+    # -shell transport, so this is the format that's actually reliable.
+    runner = FakeRunner(CommandResult(0, "23\n3456\n8192\n", ""))
 
     result = cpu_stats.cpu_stats(runner, "windows")
 

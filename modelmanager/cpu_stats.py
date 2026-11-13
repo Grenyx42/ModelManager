@@ -17,13 +17,22 @@ LINUX_CMD = (
 # it - same reasoning as remote_paths.py's $env:USERPROFILE resolution.
 # CIM's LoadPercentage is already an interval-sampled average (unlike
 # /proc/stat's raw counters), so one call is enough - no sleep needed here.
+#
+# Bare trailing expressions ($cpu; $used; $total), not a quoted/interpolated
+# Write-Output string - confirmed directly against a real box that an
+# embedded "$cpu,$used,$total" loses its double quotes somewhere in the SSH
+# -> remote-shell transport, so PowerShell parsed it as the comma *operator*
+# building an array instead of one joined string, and Write-Output of an
+# array prints one element per line. Bare expressions need no quoting at
+# all, so there's nothing left to strip - PowerShell auto-outputs each one,
+# already one per line, which is exactly what _windows_stats() below parses.
 WINDOWS_CMD = (
     "powershell -NoProfile -Command "
     "'$cpu=[math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average); "
     "$os=Get-CimInstance Win32_OperatingSystem; "
     "$used=[math]::Round(($os.TotalVisibleMemorySize-$os.FreePhysicalMemory)/1024); "
     "$total=[math]::Round($os.TotalVisibleMemorySize/1024); "
-    "Write-Output \"$cpu,$used,$total\"'"
+    "$cpu; $used; $total'"
 )
 
 
@@ -73,7 +82,7 @@ def _windows_stats(runner: Runner, timeout: float) -> dict:
     if not result.ok:
         raise CommandFailedError(f"cpu stats failed: {result.stderr.strip() or result.stdout.strip()}")
     try:
-        pct, used, total = result.stdout.strip().split(",")
+        pct, used, total = result.stdout.split()
         return {
             "utilization_pct": int(round(float(pct))),
             "memory_used_mb": int(round(float(used))),
