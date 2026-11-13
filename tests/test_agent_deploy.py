@@ -5,6 +5,27 @@ from modelmanager.runners.base import CommandResult
 from modelmanager.runners.ssh import SSHRunner
 
 
+def test_resolve_agent_script_path_prefers_dev_checkout(tmp_path):
+    dev_path = tmp_path / "scripts" / "windows" / "agent.ps1"
+    dev_path.parent.mkdir(parents=True)
+    dev_path.write_text("# dev copy")
+    bundled_path = tmp_path / "modelmanager" / "_vendor" / "agent.ps1"
+
+    assert agent_deploy._resolve_agent_script_path(dev_path, bundled_path) == dev_path
+
+
+def test_resolve_agent_script_path_falls_back_to_bundled_copy(tmp_path):
+    # A real, non-editable install never has scripts/windows/agent.ps1 on
+    # disk (only "modelmanager" is packaged) - this is what a production
+    # install actually hits, and what regressed before this fallback existed.
+    dev_path = tmp_path / "scripts" / "windows" / "agent.ps1"
+    bundled_path = tmp_path / "modelmanager" / "_vendor" / "agent.ps1"
+    bundled_path.parent.mkdir(parents=True)
+    bundled_path.write_text("# bundled copy")
+
+    assert agent_deploy._resolve_agent_script_path(dev_path, bundled_path) == bundled_path
+
+
 class FakeSSHRunner(SSHRunner):
     def __init__(self, remote_hash: str | None):
         super().__init__("monolith")

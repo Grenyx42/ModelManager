@@ -11,7 +11,23 @@ from .runners.ssh import SSHRunner
 
 logger = logging.getLogger("modelmanager.agent_deploy")
 
-LOCAL_AGENT_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "windows" / "agent.ps1"
+# An editable dev install (pip install -e ".[dev]", see CONTRIBUTING.md)
+# has __file__ pointing at the live repo, where scripts/windows/agent.ps1
+# is the real, directly-editable source - prefer that path so a local edit
+# is picked up with no rebuild. A real, non-editable install (what
+# setup.sh/scripts/restart.sh actually run in production) copies only the
+# "modelmanager" package into site-packages - scripts/ was never part of
+# it - so this path never exists there; pyproject.toml's force-include
+# bundles a copy inside the package itself for exactly that case.
+_DEV_AGENT_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "windows" / "agent.ps1"
+_BUNDLED_AGENT_SCRIPT_PATH = Path(__file__).resolve().parent / "_vendor" / "agent.ps1"
+
+
+def _resolve_agent_script_path(dev_path: Path, bundled_path: Path) -> Path:
+    return dev_path if dev_path.exists() else bundled_path
+
+
+LOCAL_AGENT_SCRIPT_PATH = _resolve_agent_script_path(_DEV_AGENT_SCRIPT_PATH, _BUNDLED_AGENT_SCRIPT_PATH)
 
 
 def local_agent_hash() -> str:

@@ -32,5 +32,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["modelmanager"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/windows/agent.ps1" = "modelmanager/_vendor/agent.ps1"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
