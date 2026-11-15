@@ -63,9 +63,19 @@ that never let the panel reach a stable, rendered state - don't reintroduce
 
 `modelmanager/` (config, coordinator, adapters, runners) is unit tested and
 any change there should come with tests. `modelmanager/cli.py` is a thin
-`httpx` wrapper around the REST API and is intentionally *not* covered by
-`tests/` - it's verified by hand against a running coordinator. If you're
-changing CLI output formatting, describe how you tested it manually in the PR.
+`httpx` wrapper around the REST API and is, for the most part, intentionally
+*not* covered by `tests/` - it's verified by hand against a running
+coordinator. If you're changing CLI output formatting, describe how you
+tested it manually in the PR.
+
+The one deliberate exception is `tests/test_cli.py`: a focused set of
+security-regression tests (`_validate_ssh_host`'s destination allowlist,
+`_client`'s HTTPS-only enforcement, `hosts add`'s fingerprint pinning) added
+after real vulnerabilities were found in exactly this code - a human
+reviewer shouldn't have to keep re-discovering the same class of bug by
+hand every time something nearby changes. Everything else in `cli.py`
+(output formatting, argument wiring, the rest of the command surface)
+still follows the manual-verification policy above.
 
 **Argument parsing uses [Click](https://click.palletsprojects.com/).** Picked
 over Typer because it was already a transitive dependency (via `uvicorn`),

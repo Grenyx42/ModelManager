@@ -38,7 +38,14 @@ class SSHRunner(Runner):
 
     def _run(self, full: list[str], timeout: float | None) -> subprocess.CompletedProcess:
         try:
-            proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+            # encoding="utf-8"/errors="replace": remote output (a model's own
+            # logs, arbitrary process stdout) isn't guaranteed valid UTF-8 -
+            # a single bad byte shouldn't crash the whole call (confirmed: a
+            # model's log output did exactly this, turning a routine logs
+            # request into a 500). text=True alone decodes with the locale's
+            # preferred encoding, not necessarily UTF-8 - pinning it keeps
+            # this "replace invalid bytes", not "mis-decode valid ones".
+            proc = subprocess.run(full, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise CommandTimeoutError(
                 f"command to {self.host_alias!r} timed out after {timeout}s: {full!r}"

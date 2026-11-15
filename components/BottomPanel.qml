@@ -801,7 +801,7 @@ Column {
             // explicitly instead of leaving an unexplained blank gap where
             // the GPU bars would otherwise be.
             Text {
-              visible: root.systemStats[modelData] && root.systemStats[modelData].gpus && root.systemStats[modelData].gpus.length === 0
+              visible: !!(root.systemStats[modelData] && root.systemStats[modelData].gpus && root.systemStats[modelData].gpus.length === 0)
               text: "No GPU detected (CPU only)"
               color: Qt.darker(root.bar ? root.bar.foreground : Color.foreground, 1.3)
               font.family: Style.font.family
@@ -813,7 +813,7 @@ Column {
             // has real numbers worth showing instead of just the "No GPU"
             // line above it.
             Text {
-              visible: root.systemStats[modelData] && root.systemStats[modelData].cpu
+              visible: !!(root.systemStats[modelData] && root.systemStats[modelData].cpu)
               text: (root.systemStats[modelData] && root.systemStats[modelData].cpu)
                 ? ("CPU " + root.systemStats[modelData].cpu.utilization_pct + "%   RAM "
                    + root.systemStats[modelData].cpu.memory_used_mb + " / "

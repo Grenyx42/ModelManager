@@ -230,8 +230,11 @@ modelmanager hosts remove alice
 
 Confirm the printed fingerprint against what alice tells you out-of-band
 (chat, in person - not through the same channel that gave you the URL)
-before accepting; `--yes` skips the prompt for scripting, but only use it
-when you've already verified the fingerprint some other way. Once trusted,
+before accepting. For scripting, `modelmanager hosts probe` first and pass
+that fingerprint back via `--yes --expect-fingerprint <fingerprint>` -
+`hosts add` refuses `--yes` without it, so a script can't skip verification
+by accident, and a cert that changed between the two calls (e.g. an active
+interception) is caught instead of silently trusted. Once trusted,
 target that coordinator by name instead of juggling `MODELMANAGER_URL`/
 `_TOKEN`/`_TLS_CERT_PATH` yourself:
 

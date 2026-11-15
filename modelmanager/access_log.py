@@ -42,5 +42,11 @@ def tail(lines: int = 200) -> str:
     log_path = paths.access_log_file()
     if not log_path.exists():
         return ""
-    result = subprocess.run(["tail", "-n", str(lines), str(log_path)], capture_output=True, text=True)
+    # encoding="utf-8"/errors="replace": same fix as runners/local.py's own
+    # tail() - a non-UTF-8 byte in this log (e.g. a client/path logged
+    # verbatim) shouldn't crash GET /v1/access-log with an unhandled
+    # UnicodeDecodeError.
+    result = subprocess.run(
+        ["tail", "-n", str(lines), str(log_path)], capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     return result.stdout

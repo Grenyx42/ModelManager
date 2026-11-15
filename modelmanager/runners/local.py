@@ -24,14 +24,20 @@ class LocalRunner(Runner):
 
     def run(self, cmd: list[str], timeout: float | None = 30) -> CommandResult:
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            # encoding="utf-8"/errors="replace": a launched process's own
+            # stdout/stderr isn't guaranteed valid UTF-8 - a bad byte
+            # shouldn't crash the call. text=True alone decodes with the
+            # locale's preferred encoding, which isn't UTF-8 everywhere
+            # (e.g. a C/POSIX locale) - pinning the encoding keeps this
+            # "replace invalid bytes", not "mis-decode valid ones".
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise CommandTimeoutError(f"command timed out after {timeout}s: {cmd!r}") from exc
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
     def run_shell(self, cmd: str, timeout: float | None = 30) -> CommandResult:
         try:
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise CommandTimeoutError(f"command timed out after {timeout}s: {cmd!r}") from exc
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
@@ -120,6 +126,6 @@ class LocalRunner(Runner):
         if not path.exists():
             return ""
         result = subprocess.run(
-            ["tail", "-n", str(lines), str(path)], capture_output=True, text=True
+            ["tail", "-n", str(lines), str(path)], capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         return result.stdout

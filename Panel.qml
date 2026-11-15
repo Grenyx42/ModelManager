@@ -66,6 +66,42 @@ Panel {
     return ["sh", "-c", "exec \"$0\" \"$@\"", root.mmBin].concat(root.mmPeerArgs()).concat(args)
   }
 
+  // Mirrors modelmanager/cli.py's _SAFE_SSH_HOST/_validate_ssh_host - same
+  // allowlist (plain alias, optional user@/DOMAIN\user@ prefix, bracketed
+  // or bare IPv6 with an optional %zone suffix), same "never starts with
+  // -" guarantee that keeps it from being parsed as an ssh/scp option.
+  // Used by launchTerminalForLogPath below: the Python CLI got this
+  // defense-in-depth hardening for the exact same ssh_host field, so the
+  // QML path doing the identical operation on identical data should too,
+  // not rely solely on the activeHost==="" gate.
+  function isSafeSshHost(host) {
+    // Found by Claude Code's review: the brackets around an IPv6 literal
+    // used to be independently optional (\[?...\]?), so a mismatched
+    // bracket ("[2001:db8::1" or "2001:db8::1]") still passed - not an
+    // injection path, but a malformed host silently cleared the
+    // validator instead of failing with a clear error. Require both
+    // brackets together or neither.
+    return /^(?:[A-Za-z0-9_][A-Za-z0-9_.\\-]*@)?(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]*:[A-Fa-f0-9:]*(?:%[A-Za-z0-9_.-]+)?\]|[A-Fa-f0-9:]*:[A-Fa-f0-9:]*(?:%[A-Za-z0-9_.-]+)?)$/.test(host)
+  }
+
+  // Mirrors modelmanager/cli.py's _is_loopback_url. Found by Claude Code's
+  // review: launchTerminalForLogPath's root.activeHost==="" gate alone
+  // isn't the same defense-in-depth cli.py's cmd_logs applies - cli.py
+  // additionally requires the resolved coordinator URL to be loopback
+  // before trusting a log-path response enough to build a direct ssh/
+  // powershell command from it (the same CWE-78-adjacent class of issue
+  // this whole validation chain exists for), since MODELMANAGER_URL could
+  // in principle resolve root.localCoordinatorUrl to something non-
+  // loopback (e.g. a Tailscale IP, per scripts/setup.sh's own listen-
+  // address detection) without activeHost ever being set.
+  function isLoopbackUrl(url) {
+    const m = /^[^:]+:\/\/(\[[^\]]+\]|[^:/]+)/.exec(url)
+    if (!m) return false
+    var host = m[1]
+    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
+    return host === "127.0.0.1" || host === "localhost" || host === "::1"
+  }
+
   // For `modelmanager hosts ...` itself only - managing which coordinators
   // *this* machine trusts is always a local decision, never routed through
   // whatever coordinator activeHost currently points at.
@@ -221,7 +257,14 @@ Panel {
     if (root.hostAddRunning || root.hostProbePendingName === "") return
     root.hostAddRunning = true
     var url = root.normalizeHostUrl(root.hostProbePendingName)
-    hostsAddProc.command = root.mmLocalHostsCommand(["hosts", "add", root.hostProbePendingName, url, "--yes"])
+    // --expect-fingerprint ties this (separate) connection back to the one
+    // whose fingerprint the user actually looked at during probeNewHost() -
+    // without it, an interceptor only needs to swap the cert on *this*
+    // connection to become the trusted endpoint.
+    hostsAddProc.command = root.mmLocalHostsCommand([
+      "hosts", "add", root.hostProbePendingName, url, "--yes",
+      "--expect-fingerprint", root.hostProbeFingerprint
+    ])
     hostsAddProc.running = true
   }
 
@@ -905,26 +948,42 @@ Panel {
     // attempt direct tailing for the local coordinator; a remote target
     // always falls through to the REST-polling fallback below instead,
     // which only ever needs the same bearer token already in use.
-    if (root.activeHost === "") {
+    //
+    // isLoopbackUrl: activeHost==="" alone isn't the full trust boundary
+    // cli.py's cmd_logs applies for the identical decision - also require
+    // the resolved coordinator URL to actually be loopback, matching
+    // cli.py's own is_local = not peer and _is_loopback_url(url). Never
+    // rely on one gate alone for "is this safe to build an ssh/powershell
+    // command from".
+    if (root.activeHost === "" && root.isLoopbackUrl(root.localCoordinatorUrl)) {
       try {
         var info = JSON.parse(rawText)
         var logPaths = info.paths || []
-        // Usually one file, but a remote Windows launch keeps stdout/stderr
-        // as two separate files (see agent.ps1) - and the process being
-        // launched almost always logs to stderr, so tailing only the first
-        // one here would look like the terminal just isn't showing anything.
+        // A remote Windows launch keeps stdout/stderr as two separate
+        // files (see agent.ps1), and PowerShell's Get-Content -Wait
+        // silently produces no output at all when given more than one
+        // -Path (same thing cli.py's own _follow_command/
+        // _follow_multi_windows works around, by spawning one process
+        // per file and interleaving their output - not reproducible here
+        // as a single terminal command). Only attempt direct tailing for
+        // the single-file case; two or more files falls through to the
+        // polling fallback below instead of opening a terminal that
+        // silently shows nothing.
         if (logPaths.length > 0) {
-          if (info.control === "ssh" && info.os === "windows") {
-            var psPaths = logPaths.map(function(p) {
-              return "'" + p.replace(/'/g, "''") + "'"
-            }).join(",")
+          // isSafeSshHost: same defense-in-depth as cli.py's
+          // _validate_ssh_host for this exact field - don't rely solely
+          // on the activeHost==="" gate above. An unsafe value falls
+          // through to the REST-polling fallback below instead of ever
+          // reaching an ssh/powershell argv.
+          if (info.control === "ssh" && info.os === "windows" && logPaths.length === 1 && root.isSafeSshHost(info.ssh_host)) {
+            var psPaths = "'" + logPaths[0].replace(/'/g, "''") + "'"
             followCmd = [
               "ssh", info.ssh_host, "powershell", "-NoProfile", "-Command",
               "Get-Content -Path " + psPaths + " -Wait -Tail 100"
             ]
-          } else if (info.control === "ssh") {
+          } else if (info.control === "ssh" && info.os !== "windows" && root.isSafeSshHost(info.ssh_host)) {
             followCmd = ["ssh", info.ssh_host, "tail", "-f", "-n", "100"].concat(logPaths)
-          } else {
+          } else if (info.control !== "ssh") {
             followCmd = ["tail", "-f", "-n", "100"].concat(logPaths)
           }
         }
@@ -939,7 +998,12 @@ Panel {
       // itself uses - mmPeerArgs() (not mmCommand's sh-wrapped form, which
       // would nest awkwardly inside watch's own command re-parsing) keeps
       // this pointed at whatever coordinator is actually active.
-      followCmd = ["watch", "-n", "2", root.mmBin].concat(root.mmPeerArgs()).concat(["logs", name, "--lines", "100"])
+      // "-x": watch normally rejoins its argv into one string and re-execs
+      // it via `sh -c` - `name` is a model on whatever host is active,
+      // which for a peer is a string that peer's own coordinator chose, not
+      // this user. -x execs the argv directly, so it can't be reinterpreted
+      // as shell syntax no matter what it contains.
+      followCmd = ["watch", "-x", "-n", "2", root.mmBin].concat(root.mmPeerArgs()).concat(["logs", name, "--lines", "100"])
     }
     // xdg-terminal-exec's two-token "--title <value>" form silently mis-parses
     // (swallows the value as if it were the command), even with no spaces in
@@ -1281,6 +1345,36 @@ Panel {
   property alias diagnosisStatusProc: diagnosisProcsGroup.diagnosisStatusProc
   property alias diagnosisLogsProc: diagnosisProcsGroup.diagnosisLogsProc
 
+  // Read-only state dump for `quickshell ipc call` - lets an outside smoke
+  // test compare what this panel is actually displaying against a fresh
+  // `modelmanager list`/`stats` call, and confirm the widget rendered at a
+  // real size instead of silently collapsing to 0x0 (see the
+  // implicitWidth/implicitHeight comment above - a broken button anchor
+  // paints nothing, with no error visible anywhere else).
+  //
+  // A distinct target, not root.ipcTarget - the base Panel type (qs.Ui)
+  // already owns an IpcHandler on that target (open/close/show/hide/toggle;
+  // see Ui/Panel.qml); a second IpcHandler on the same target gets silently
+  // shadowed instead of merging (confirmed directly: `quickshell ipc show`
+  // only ever listed the base type's five functions, never this one, until
+  // it got its own target).
+  IpcHandler {
+    target: root.ipcTarget + ".debug"
+    function dumpState(): string {
+      return JSON.stringify({
+        models: root.models,
+        systemStats: root.systemStats,
+        runningCount: root.runningCount,
+        refreshIntervalSec: root.refreshIntervalSec,
+        lastError: root.lastError,
+        activeHost: root.activeHost,
+        localCoordinatorUrl: root.localCoordinatorUrl,
+        mmBin: root.mmBin,
+        implicitWidth: root.implicitWidth,
+        implicitHeight: root.implicitHeight,
+      })
+    }
+  }
 
   BarIconButton {
     id: button

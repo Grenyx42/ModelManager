@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import ssl
 import sys
 from pathlib import Path
@@ -58,6 +59,16 @@ def _client(args, timeout: float = 30) -> httpx.Client:
     # back to the system CA bundle, which will fail verification with a
     # clear TLS error pointing at the real problem instead of crashing on a
     # missing file.
+    if token and urlparse(url).scheme != "https":
+        # `hosts add` already refuses to save a non-https peer for this
+        # exact reason (CWE-319), but that only protects the --peer path -
+        # a bare `--url http://...` (or
+        # MODELMANAGER_URL) bypasses known_hosts entirely and would
+        # otherwise send this Authorization: Bearer header in cleartext to
+        # whatever's on the wire.
+        print(json.dumps({"error": f"refusing to send the bearer token to {url!r} over a non-https "
+                                    f"connection (it would be sent in cleartext) - use an https:// url"}))
+        sys.exit(1)
     verify = str(cert_path) if cert_path.exists() else True
     return httpx.Client(base_url=url, timeout=timeout, headers=headers, verify=verify)
 
@@ -482,7 +493,52 @@ def cmd_group_stats(args) -> int:
         return 0
 
 
+# A bare hostname/ssh-config-alias, optionally with a "user@" prefix or an
+# IPv6 literal - in particular it never starts with "-", which is what keeps
+# it from being parsed by ssh/scp as an option (e.g. "-oProxyCommand=<cmd>")
+# instead of a destination. This is a hard allowlist, not a denylist of
+# "bad" characters, so there's no way to enumerate around it: the IPv6
+# branch's charset (hex digits, ":", brackets) can't itself spell an option
+# flag, and the optional "user@" prefix is held to the same "doesn't start
+# with -" rule as the host part.
+#
+# SystemConfig.ssh_host (modelmanager/config.py) is documented as "SSH
+# alias/hostname" with no further constraint, and the registry already
+# accepts user@host and bare IPv6 values, so a stricter
+# bare-hostname check here would silently break `logs --follow` on an
+# otherwise-valid system instead of catching anything unsafe. Same reasoning
+# for allowing a leading "_" - a perfectly ordinary ~/.ssh/config alias like
+# "_gpu" or "_service@worker" would otherwise fail too - and for allowing
+# an optional "%zone" suffix on the IPv6 branch (e.g. "fe80::1%eth0"), a
+# valid link-local address form ssh itself accepts - and for allowing a
+# backslash in the user prefix only, for Windows OpenSSH's domain-qualified
+# "DOMAIN\user@host" destination form (never in the host/IPv6 part, where
+# a backslash has no meaning). The two IPv6 alternatives (bracketed,
+# bare) are separate, not "\[?...\]?" - independently-optional brackets
+# would accept a mismatched one ("[2001:db8::1" or "2001:db8::1]"); not
+# an injection path (the charset still excludes "-" and shell
+# metacharacters), but a malformed host should fail validation cleanly
+# instead of sailing through to a confusing ssh connection error later.
+_SAFE_SSH_HOST = re.compile(
+    r"(?:[A-Za-z0-9_][A-Za-z0-9_.\\-]*@)?"
+    r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*"
+    r"|\[[A-Fa-f0-9:]*:[A-Fa-f0-9:]*(?:%[A-Za-z0-9_.-]+)?\]"
+    r"|[A-Fa-f0-9:]*:[A-Fa-f0-9:]*(?:%[A-Za-z0-9_.-]+)?)"
+)
+
+
+def _is_loopback_url(url: str) -> bool:
+    return urlparse(url).hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def _validate_ssh_host(ssh_host: str) -> str:
+    if not _SAFE_SSH_HOST.fullmatch(ssh_host):
+        raise ValueError(f"refusing to use {ssh_host!r} as an ssh destination - doesn't look like a plain hostname/alias")
+    return ssh_host
+
+
 def _windows_tail_command(ssh_host: str, path: str, lines: int) -> list[str]:
+    ssh_host = _validate_ssh_host(ssh_host)
     escaped = path.replace("'", "''")
     return [
         "ssh",
@@ -506,7 +562,7 @@ def _follow_command(info: dict, lines: int) -> list[str] | None:
             return _windows_tail_command(info["ssh_host"], paths[0], lines)
         return None
     if info.get("control") == "ssh":
-        return ["ssh", info["ssh_host"], "tail", "-f", "-n", str(lines), *paths]
+        return ["ssh", _validate_ssh_host(info["ssh_host"]), "tail", "-f", "-n", str(lines), *paths]
     return ["tail", "-f", "-n", str(lines), *paths]
 
 
@@ -569,17 +625,69 @@ def cmd_logs(args) -> int:
             return _print_response(resp)
         info = resp.json()
 
-    paths = info.get("paths") or []
-    if info.get("control") == "ssh" and info.get("os") == "windows" and len(paths) > 1:
-        return _follow_multi_windows(info["ssh_host"], paths, args.lines)
+    # Direct ssh/scp-based tailing only ever makes sense - and is only ever
+    # safe - for the local coordinator's own registry-configured systems. A
+    # remote coordinator's log-path response is *that coordinator's own*
+    # choice of control/os/ssh_host/paths, not this user's - building a
+    # local ssh or powershell-over-ssh command from it would hand a hostile
+    # or compromised coordinator a way to run commands on this machine just
+    # by being asked for its logs. Gating on --peer alone isn't enough - a
+    # bare --url pointed at a remote coordinator (no --peer, no known_hosts
+    # entry) would otherwise sail through the same way. The actual trust
+    # boundary is "is this coordinator this machine's own loopback
+    # process", so check both. Anything else always falls through to the
+    # REST-polling fallback below instead, which only ever needs the same
+    # bearer token already in use. _validate_ssh_host() below is defense in
+    # depth for the local case too, so this never relies on the gate alone.
+    is_local = not getattr(args, "peer", None) and _is_loopback_url(args.url)
 
-    command = _follow_command(info, args.lines)
+    command = None
+    try:
+        if is_local:
+            paths = info.get("paths") or []
+            if info.get("control") == "ssh" and info.get("os") == "windows" and len(paths) > 1:
+                return _follow_multi_windows(info["ssh_host"], paths, args.lines)
+            command = _follow_command(info, args.lines)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 1
+
     if command is None:
         # No discrete log file (e.g. an externally-managed ollama service,
-        # only in journalctl) - poll the same endpoint `logs` uses instead.
-        command = ["watch", "-n", "2", sys.argv[0], "logs", args.name, "--lines", str(args.lines)]
+        # only in journalctl), or a peer target - poll the same endpoint
+        # `logs` uses instead. "-x": watch normally reconstructs its argv
+        # into one string and re-execs it via `sh -c` - args.name could be a
+        # model on an active peer, i.e. a string that peer's own coordinator
+        # chose, not this user. -x execs the argv directly instead, so it
+        # can never be reinterpreted as shell syntax no matter what it
+        # contains.
+        #
+        # Global options have to be repeated here - this re-invokes the CLI
+        # from scratch every 2s, which otherwise silently falls back to
+        # --url's/--token's own defaults instead of staying on whatever
+        # coordinator (e.g. --peer) the original request actually used.
+        #
+        # An explicit --token stays out of argv deliberately: watch prints
+        # its own command in the terminal title/header by default (-x only
+        # changes how it's executed, not whether it's displayed), which
+        # would put the bearer token on screen for the whole follow session
+        # - and in `ps` output regardless of -t. MODELMANAGER_TOKEN env var
+        # is the same fallback _client()/auth.read_token() already use, so
+        # this reaches the re-invoked process without ever being an argv.
+        global_args = ["--url", args.url]
+        if getattr(args, "peer", None):
+            global_args += ["--peer", args.peer]
+        env = None
+        if getattr(args, "token", None):
+            env = {**os.environ, "MODELMANAGER_TOKEN": args.token}
+        command = [
+            "watch", "-x", "-t", "-n", "2", sys.argv[0], *global_args,
+            "logs", args.name, "--lines", str(args.lines),
+        ]
+    else:
+        env = None
     try:
-        return subprocess.run(command).returncode
+        return subprocess.run(command, env=env).returncode
     except KeyboardInterrupt:
         return 0
 
@@ -843,6 +951,16 @@ def cmd_hosts(args) -> int:
             return 1
         print(json.dumps({"name": args.name, "last_connected": entry["last_connected"]}))
         return 0
+    if args.hosts_action == "add" and urlparse(args.url).scheme != "https":
+        # _client() sends this entry's saved url as base_url with
+        # `Authorization: Bearer <token>` on every request (CWE-319) - an
+        # http:// entry would send that token in
+        # cleartext to any on-path observer. Checked here, not just in
+        # known_hosts.add_known_host, so it's caught before the TLS probe
+        # below even runs.
+        print(json.dumps({"error": f"refusing to trust {args.url!r} - must be https:// (a bearer token would "
+                                    f"otherwise be sent in cleartext)"}))
+        return 1
     try:
         pem, fingerprint = _fetch_cert_fingerprint(args.url)
     except (OSError, ValueError) as exc:
@@ -851,7 +969,25 @@ def cmd_hosts(args) -> int:
     if args.hosts_action == "probe":
         print(json.dumps({"url": args.url, "fingerprint": fingerprint}))
         return 0
-    # add
+    # add - this is a second, independent connection from whatever `probe`
+    # already showed a human. --expect-fingerprint ties the two together: an
+    # active MITM that lets `probe` through untouched and only swaps the cert
+    # on *this* connection gets caught here, instead of the swapped cert
+    # silently becoming the trusted entry. --yes alone has no such check, so
+    # it's refused on its own - the caller must supply what was shown
+    # earlier, not just promise it matches.
+    expected = getattr(args, "expect_fingerprint", None)
+    if expected is not None and expected != fingerprint:
+        print(json.dumps({
+            "error": "fingerprint does not match what was previously shown - refusing to trust "
+                     "(the certificate may have changed, possibly due to interception)",
+            "expected": expected,
+            "actual": fingerprint,
+        }))
+        return 1
+    if args.yes and expected is None:
+        print(json.dumps({"error": "--yes requires --expect-fingerprint (the fingerprint from a prior `hosts probe`)"}))
+        return 1
     if not args.yes:
         print(f"Fingerprint for {args.url}: {fingerprint}", file=sys.stderr)
         print("Confirm this matches what the other side's operator told you out-of-band.", file=sys.stderr)
@@ -1209,9 +1345,14 @@ def hosts_probe(ctx, url):
 @click.argument("name")
 @click.argument("url")
 @click.option("--yes", is_flag=True, help="skip the interactive fingerprint confirmation")
+@click.option(
+    "--expect-fingerprint", default=None,
+    help="fingerprint shown by a prior `hosts probe` - required with --yes, since --yes alone "
+         "has no way to know this is still the same cert the caller actually looked at",
+)
 @click.pass_context
-def hosts_add(ctx, name, url, yes):
-    _run(ctx, cmd_hosts, hosts_action="add", name=name, url=url, yes=yes)
+def hosts_add(ctx, name, url, yes, expect_fingerprint):
+    _run(ctx, cmd_hosts, hosts_action="add", name=name, url=url, yes=yes, expect_fingerprint=expect_fingerprint)
 
 
 @hosts_group.command("list", help="list trusted hosts")

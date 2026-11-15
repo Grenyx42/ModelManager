@@ -17,6 +17,36 @@ from .base import AdapterStatus, EngineAdapter
 BUSY_PROBE_TIMEOUT_SECONDS = 2.0
 
 
+def _normalize_model_ref(ref: str) -> str:
+    """Ollama always reports a loaded model's name/model fields with an
+    explicit tag ("cydonia-story:latest") even when none was ever specified -
+    a registry model_ref that omits the tag (just "cydonia-story") would
+    otherwise never match, making status()/busy() report "not running"
+    forever for a model that's actually loaded and stable. An explicit,
+    non-"latest" tag already matches as-is, so this only ever adds ":latest"
+    to a bare name - it never widens matching beyond what Ollama itself
+    considers the same model.
+
+    Only the final path segment is checked for a tag separator - a bare
+    "registry.example:5000/team/model" has a colon from the registry's own
+    host:port, not a tag, and Ollama's own parser treats it the same way
+    (colon-as-tag only counts after the last "/"). Checking the whole
+    string would misdetect that colon as a tag and skip adding ":latest",
+    producing a canonical name that doesn't match what Ollama reports.
+
+    ref.rstrip("/") happens first, before splitting off the final segment -
+    a trailing slash would otherwise make that segment empty, which both
+    (a) hides an explicit tag that's actually there ("team/model:v1/" ->
+    final segment "" -> no colon seen -> wrongly double-tagged to
+    "team/model:v1:latest") and (b), for a genuinely bare name
+    ("team/model/"), puts ":latest" after the slash instead of the name.
+    Stripping first makes the final-segment check see the real tag (or
+    lack of one) either way."""
+    ref = ref.rstrip("/")
+    tag_candidate = ref.rsplit("/", 1)[-1]
+    return ref if ":" in tag_candidate else f"{ref}:latest"
+
+
 class OllamaAdapter(EngineAdapter):
     """Controls models on an Ollama server via its own HTTP API.
 
@@ -129,8 +159,9 @@ class OllamaAdapter(EngineAdapter):
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             return AdapterStatus(running=False, detail=f"ollama unreachable: {exc}")
+        target = _normalize_model_ref(candidate.model_ref)
         for model in resp.json().get("models", []):
-            if model.get("name") == candidate.model_ref or model.get("model") == candidate.model_ref:
+            if model.get("name") == target or model.get("model") == target:
                 return AdapterStatus(running=True)
         return AdapterStatus(running=False)
 
@@ -161,9 +192,10 @@ class OllamaAdapter(EngineAdapter):
             models = resp.json().get("models", [])
         except (httpx.HTTPError, ValueError):
             return None
+        target = _normalize_model_ref(candidate.model_ref)
         expires_at = None
         for model in models:
-            if model.get("name") == candidate.model_ref or model.get("model") == candidate.model_ref:
+            if model.get("name") == target or model.get("model") == target:
                 expires_at = model.get("expires_at")
                 break
         if expires_at is None:

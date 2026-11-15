@@ -16,10 +16,63 @@ def test_run_captures_output():
     assert result.stdout.strip() == "hello"
 
 
+def test_run_tolerates_non_utf8_output():
+    # Confirmed directly in production: a model's own log output containing
+    # a non-UTF-8 byte crashed subprocess's strict decode, turning a routine
+    # logs request into a raw 500 instead of just garbling that one byte.
+    #
+    # Asserting only "ok"/"done" are present
+    # would also pass if the invalid byte were silently dropped instead of
+    # replaced, and wouldn't catch encoding="utf-8" being missing (a non-
+    # UTF-8 locale could mis-decode the *valid* "café" bytes too) - assert
+    # the whole string, including the replacement character.
+    runner = LocalRunner()
+    result = runner.run(["printf", "ok \\xe6 caf\\xc3\\xa9 done"])
+    assert result.ok
+    assert result.stdout == "ok � café done"
+
+
 def test_run_shell_timeout_raises_command_timeout_error():
     runner = LocalRunner()
     with pytest.raises(CommandTimeoutError):
         runner.run_shell("sleep 5", timeout=0.2)
+
+
+def test_run_shell_tolerates_non_utf8_output():
+    # run() has a non-UTF-8 test, but
+    # run_shell() got the same encoding="utf-8"/errors="replace" fix
+    # without its own test - nothing was exercising that decode path here.
+    #
+    # run_shell uses shell=True, i.e. /bin/sh -
+    # dash's printf builtin (POSIX, no GNU extensions) doesn't understand
+    # \xHH hex escapes and would print them literally instead of emitting
+    # the intended bytes. Octal escapes (\NNN) are POSIX and portable to
+    # both dash and bash.
+    runner = LocalRunner()
+    result = runner.run_shell("printf 'ok \\346 caf\\303\\251 done'")
+    assert result.ok
+    assert result.stdout == "ok � café done"
+
+
+def test_tail_tolerates_non_utf8_output(tmp_path):
+    # Same gap, for tail() - it decodes `tail`'s own subprocess output with
+    # the identical fix, but had no test covering invalid bytes either.
+    log_path = tmp_path / "out.log"
+    log_path.write_bytes(b"ok \xe6 caf\xc3\xa9 done\n")
+    runner = LocalRunner()
+    assert runner.tail(log_path, lines=10) == "ok � café done\n"
+
+
+def test_ssh_run_tolerates_non_utf8_output():
+    # The other non-UTF-8 test (test_run_tolerates_non_utf8_output) only
+    # exercises LocalRunner - the SSH-specific tests all mock subprocess.run
+    # entirely, so none of them actually run SSHRunner._run's own decoding.
+    # Calling _run directly with a real local command (bypassing the ssh/scp
+    # wrapping, which _run doesn't care about - it just execs whatever list
+    # it's given) exercises the real decode path without a live SSH host.
+    runner = SSHRunner("monolith")
+    result = runner._run(["printf", "ok \\xe6 caf\\xc3\\xa9 done"], timeout=5)
+    assert result.stdout == "ok � café done"
 
 
 def test_ssh_run_shell_timeout_raises_command_timeout_error(monkeypatch):

@@ -8,7 +8,7 @@ import pytest
 import socket
 
 from modelmanager.adapters.llamacpp import LlamaCppAdapter
-from modelmanager.adapters.ollama import OllamaAdapter
+from modelmanager.adapters.ollama import OllamaAdapter, _normalize_model_ref
 from modelmanager.adapters.process import ProcessAdapter
 from modelmanager.config import Candidate, EngineConfig, SystemConfig
 from modelmanager.errors import EngineControlError, PortInUseError
@@ -349,8 +349,11 @@ def test_ollama_status_and_lifecycle(monkeypatch):
         return httpx.Response(200, json={"done": True}, request=httpx.Request("POST", url))
 
     def fake_get(url, timeout):
+        # Ollama always reports a tag, even when the model was loaded
+        # without specifying one - "nomic-embed-text" alone is never what a
+        # real server sends back.
         return httpx.Response(
-            200, json={"models": [{"name": "nomic-embed-text"}]}, request=httpx.Request("GET", url)
+            200, json={"models": [{"name": "nomic-embed-text:latest"}]}, request=httpx.Request("GET", url)
         )
 
     monkeypatch.setattr(httpx, "post", fake_post)
@@ -365,6 +368,48 @@ def test_ollama_status_and_lifecycle(monkeypatch):
 
     adapter.stop("nomic-embed", candidate)
     assert posted["json"]["keep_alive"] == 0
+
+
+def test_normalize_model_ref_ignores_registry_host_port_colon():
+    # A plain "colon in ref" check mistakes
+    # the registry's own host:port for a tag separator - Ollama only treats
+    # a colon after the last "/" as a tag, same as this should.
+    assert _normalize_model_ref("registry.example:5000/team/model") == "registry.example:5000/team/model:latest"
+    assert _normalize_model_ref("registry.example:5000/team/model:v1") == "registry.example:5000/team/model:v1"
+
+
+def test_normalize_model_ref_strips_trailing_slash():
+    # A trailing slash makes rsplit("/", 1)'s final segment empty, so
+    # ":latest" landed after the slash ("team/model/:latest") instead of
+    # after the model name.
+    assert _normalize_model_ref("team/model/") == "team/model:latest"
+
+
+def test_normalize_model_ref_strips_trailing_slash_with_explicit_tag():
+    # Found by Claude Code's review: stripping the trailing slash after
+    # (not before) checking for a tag meant an explicit tag was invisible
+    # to that check too, double-tagging to "team/model:v1:latest" instead
+    # of leaving the already-tagged ref alone.
+    assert _normalize_model_ref("team/model:v1/") == "team/model:v1"
+
+
+def test_ollama_status_matches_untagged_model_ref_against_taged_server_response(monkeypatch):
+    # Confirmed directly against a real server: a model_ref with no explicit
+    # tag ("cydonia-story") still gets reported back tagged ("cydonia-
+    # story:latest") - an exact-string match would report "not running"
+    # forever for a model that's actually loaded and stable, which is
+    # exactly what happened in production (endless crash-detected/restart
+    # cycle against a model Ollama never actually dropped).
+    engine = EngineConfig(system="sleek", type="ollama", base_url="http://localhost:11434")
+    adapter = OllamaAdapter("ollama-sleek", engine, FakeLocalRunner())
+    candidate = Candidate(engine="e", gpu_group="g", port=11434, model_ref="cydonia-story")
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(
+        200, json={"models": [{"name": "cydonia-story:latest", "model": "cydonia-story:latest"}]},
+        request=httpx.Request("GET", url),
+    ))
+
+    assert adapter.status("text", candidate).running is True
 
 
 def test_ollama_busy_is_none_on_first_observation(monkeypatch):
