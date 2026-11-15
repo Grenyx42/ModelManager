@@ -20,24 +20,12 @@ Column {
   // shortcuts, same as modelFilterField/hostField already get.
   property alias statsFilterFieldFocus: statsFilterField.activeFocus
 
-  Text {
-    visible: root.actionError !== ""
+  ErrorText {
     text: root.actionError
-    color: Color.urgent
-    wrapMode: Text.Wrap
-    width: parent.width
-    font.family: Style.font.family
-    font.pixelSize: Style.font.caption
   }
 
-  Text {
-    visible: root.registryError !== ""
-    text: "registry.json failed to reload: " + root.registryError
-    color: Color.urgent
-    wrapMode: Text.Wrap
-    width: parent.width
-    font.family: Style.font.family
-    font.pixelSize: Style.font.caption
+  ErrorText {
+    text: root.registryError !== "" ? ("registry.json failed to reload: " + root.registryError) : ""
   }
 
   // Shown whenever the backend is down, or the registry is still the
@@ -622,14 +610,9 @@ Column {
     }
   }
 
-  Text {
+  ErrorText {
     visible: root.lastError !== "" && !root.backendUnreachable && root.activeHost === ""
     text: root.lastError
-    color: Color.urgent
-    wrapMode: Text.Wrap
-    width: parent.width
-    font.family: Style.font.family
-    font.pixelSize: Style.font.caption
   }
 
   // Remote-target errors get their own always-shown line (unlike the
@@ -637,14 +620,8 @@ Column {
   // block or the plain lastError text above) - a remote peer being
   // unreachable or refusing a request (e.g. a grant missing that
   // system) is never "run setup.sh", so none of that gating applies.
-  Text {
-    visible: root.activeHost !== "" && root.lastError !== ""
-    text: "Peer '" + root.activeHost + "': " + root.lastError
-    color: Color.urgent
-    wrapMode: Text.Wrap
-    width: parent.width
-    font.family: Style.font.family
-    font.pixelSize: Style.font.caption
+  ErrorText {
+    text: root.activeHost !== "" && root.lastError !== "" ? ("Peer '" + root.activeHost + "': " + root.lastError) : ""
   }
 
   // Hidden entirely while a host trust decision is pending (see
