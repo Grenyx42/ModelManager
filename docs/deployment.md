@@ -261,7 +261,14 @@ interception) is caught instead of silently trusted.
 `hosts add` also generates a fresh **per-peer token** the first time you
 trust a given name, and prints it right alongside the fingerprint - give
 that value (not your owner token from `auth show`) to alice so she can run
-`grant add you <that-token>` on her end. Once trusted, target that
+`grant add you <that-token>` on her end. Re-running `hosts add alice <url>`
+later preserves that token as long as the fingerprint is unchanged (the
+fingerprint, not the name, is what the token is actually bound to) - but if
+the fingerprint *is* different from what this name was last trusted as,
+that's a different entity now, not just alice's rotated cert, so a brand
+new token is generated automatically and the result is flagged
+`"token_regenerated": true` with a note - re-share the new value before
+`--peer alice` can use anything she's granted it. Once trusted, target that
 coordinator by name instead of juggling `MODELMANAGER_URL`/`_TOKEN`/
 `_TLS_CERT_PATH` yourself:
 

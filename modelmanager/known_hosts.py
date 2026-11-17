@@ -37,23 +37,30 @@ def add_known_host(
     """Saves the peer's cert PEM under <cert_dir>/<name>.pem and records the
     entry - called only after the caller has already shown `fingerprint` to
     a human (or they passed --yes) and chosen to trust it. Re-adding an
-    existing name overwrites url/cert_file/fingerprint (re-trusting a
-    rotated cert for someone you already know, same `grant add`-style
-    overwrite-by-name convention) but preserves an existing `token` rather
-    than silently generating a new one - re-confirming this peer's TLS
-    identity shouldn't also invalidate the credential you already handed
-    them for `grant add` on their end. Generates a fresh one only if this
-    name has none yet (brand new, or an entry from before this field
-    existed) - see cli.py's _client() and rotate_host_token() below for why
-    this is per-peer rather than one value shared across every --peer
-    target."""
+    existing name always overwrites url/cert_file/fingerprint, but only
+    preserves the existing `token` when `fingerprint` matches what was
+    already stored under this name - the fingerprint, not the name, is the
+    actual cryptographic identity a per-peer token is bound to. A routine
+    re-confirmation of the *same* party's cert (fingerprint unchanged, even
+    if its url moved) shouldn't invalidate the credential already handed to
+    them for `grant add`; but a *different* fingerprint means this local
+    name now points at a different entity - possibly the same person's new
+    hardware, possibly a mistake, possibly a swapped-in attacker the human
+    just approved without noticing - and carrying the old token forward
+    would hand that new, different entity a credential already registered
+    (and still valid) in the *previous* entity's grants.json, letting it
+    replay that back for the previous entity's own granted access. See
+    cli.py's cmd_hosts, which surfaces `token_regenerated` so the caller
+    knows to re-share it when this happens."""
     cert_dir = cert_dir or default_known_hosts_dir()
     cert_dir.mkdir(parents=True, exist_ok=True)
     cert_path = cert_dir / f"{name}.pem"
     cert_path.write_text(cert_pem)
     hosts = load_known_hosts(path)
     existing = hosts.get(name)
-    token = existing["token"] if existing and existing.get("token") else auth.generate_token()
+    same_identity = bool(existing) and existing.get("fingerprint") == fingerprint
+    token = existing["token"] if same_identity and existing.get("token") else auth.generate_token()
+    token_regenerated = bool(existing) and not same_identity
     now = datetime.now(timezone.utc).isoformat()
     entry = {
         "url": url,
@@ -70,7 +77,9 @@ def add_known_host(
     }
     hosts[name] = entry
     save_known_hosts(hosts, path)
-    return entry
+    # token_regenerated is caller-facing only, not part of the persisted
+    # entry - a fresh dict, not a mutation of what was just saved.
+    return {**entry, "token_regenerated": token_regenerated}
 
 
 def rotate_host_token(name: str, path: Path | None = None) -> dict | None:

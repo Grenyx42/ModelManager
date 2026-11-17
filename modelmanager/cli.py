@@ -1038,12 +1038,21 @@ def cmd_hosts(args) -> int:
             print(json.dumps({"error": "not trusted - aborted, nothing saved"}))
             return 1
     entry = known_hosts.add_known_host(args.name, args.url, pem, fingerprint)
-    print(json.dumps({
+    result = {
         "name": args.name,
         "url": entry["url"],
         "fingerprint": entry["fingerprint"],
         "token": entry["token"],
-    }))
+    }
+    if entry["token_regenerated"]:
+        # This name's fingerprint changed since it was last trusted - a
+        # different entity now, not just the same one's rotated cert (see
+        # add_known_host's own comment) - the old token must not keep being
+        # sent here, so a fresh one was generated and needs re-sharing.
+        result["token_regenerated"] = True
+        result["note"] = "this name's identity changed since it was last trusted, so a new token was " \
+                          "generated - re-share it with this peer's owner for `grant add`"
+    print(json.dumps(result))
     return 0
 
 

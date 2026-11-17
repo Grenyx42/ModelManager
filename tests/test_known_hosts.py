@@ -104,17 +104,48 @@ def test_two_different_hosts_get_two_different_tokens(tmp_path):
     assert alice["token"] != bob["token"]
 
 
-def test_re_adding_an_existing_name_preserves_its_token(tmp_path):
-    # Re-trusting a rotated cert shouldn't also silently invalidate the
-    # credential already shared with that peer's owner for `grant add`.
+def test_re_adding_with_the_same_fingerprint_preserves_its_token(tmp_path):
+    # Same identity (fingerprint unchanged, e.g. the box's address moved)
+    # shouldn't silently invalidate the credential already shared with that
+    # peer's owner for `grant add`.
+    path = tmp_path / "known_hosts.json"
+    cert_dir = tmp_path / "certs"
+    first = known_hosts.add_known_host("alice", "https://old:8778", "pem", "AB:CD", path=path, cert_dir=cert_dir)
+
+    second = known_hosts.add_known_host("alice", "https://new:8778", "pem", "AB:CD", path=path, cert_dir=cert_dir)
+
+    assert second["token"] == first["token"]
+    assert second["url"] == "https://new:8778"
+    assert second["token_regenerated"] is False
+
+
+def test_re_adding_with_a_different_fingerprint_regenerates_the_token(tmp_path):
+    # A changed fingerprint means a genuinely different entity now holds
+    # this local name, even if the human just confirmed trusting it -
+    # carrying the old token forward would let that different entity
+    # replay it back at whichever coordinator actually registered it,
+    # for the *previous* entity's own granted access (see add_known_host's
+    # own comment).
     path = tmp_path / "known_hosts.json"
     cert_dir = tmp_path / "certs"
     first = known_hosts.add_known_host("alice", "https://old:8778", "old-pem", "11:11", path=path, cert_dir=cert_dir)
 
     second = known_hosts.add_known_host("alice", "https://new:8778", "new-pem", "22:22", path=path, cert_dir=cert_dir)
 
-    assert second["token"] == first["token"]
-    assert second["url"] == "https://new:8778"
+    assert second["token"] != first["token"]
+    assert second["token_regenerated"] is True
+
+
+def test_first_time_add_known_host_is_not_flagged_as_regenerated(tmp_path):
+    # token_regenerated is specifically "this replaced a *different*
+    # previous identity's token", not just "a token was generated" - a
+    # brand new name has no previous identity to have changed from.
+    entry = known_hosts.add_known_host(
+        "alice", "https://systemA:8778", "pem", "AB:CD",
+        path=tmp_path / "known_hosts.json", cert_dir=tmp_path / "certs",
+    )
+
+    assert entry["token_regenerated"] is False
 
 
 def test_rotate_host_token_changes_only_the_token(tmp_path):

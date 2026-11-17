@@ -347,7 +347,7 @@ def test_hosts_add_accepts_matching_fingerprint(monkeypatch):
     monkeypatch.setattr(
         known_hosts, "add_known_host",
         lambda name, url, pem, fingerprint: add_called.append((name, url, pem, fingerprint)) or {
-            "url": url, "fingerprint": fingerprint, "token": "peer-token-value",
+            "url": url, "fingerprint": fingerprint, "token": "peer-token-value", "token_regenerated": False,
         },
     )
 
@@ -363,7 +363,9 @@ def test_hosts_add_prints_the_peer_token(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_fetch_cert_fingerprint", lambda url: ("PEM", "AA:BB"))
     monkeypatch.setattr(
         known_hosts, "add_known_host",
-        lambda name, url, pem, fingerprint: {"url": url, "fingerprint": fingerprint, "token": "peer-token-value"},
+        lambda name, url, pem, fingerprint: {
+            "url": url, "fingerprint": fingerprint, "token": "peer-token-value", "token_regenerated": False,
+        },
     )
 
     rc = cli.cmd_hosts(_hosts_add_args(expect_fingerprint="AA:BB"))
@@ -371,6 +373,28 @@ def test_hosts_add_prints_the_peer_token(monkeypatch, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["token"] == "peer-token-value"
+    assert "note" not in out
+
+
+def test_hosts_add_flags_and_explains_a_regenerated_token(monkeypatch, capsys):
+    # A fingerprint change under the same name means a different identity -
+    # the caller must be told the token is new and needs re-sharing, not
+    # just silently handed a value that happens to differ from last time.
+    monkeypatch.setattr(cli, "_fetch_cert_fingerprint", lambda url: ("PEM", "AA:BB"))
+    monkeypatch.setattr(
+        known_hosts, "add_known_host",
+        lambda name, url, pem, fingerprint: {
+            "url": url, "fingerprint": fingerprint, "token": "new-token-value", "token_regenerated": True,
+        },
+    )
+
+    rc = cli.cmd_hosts(_hosts_add_args(expect_fingerprint="AA:BB"))
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["token"] == "new-token-value"
+    assert out["token_regenerated"] is True
+    assert "note" in out
 
 
 # --- hosts rotate-token --------------------------------------------------
