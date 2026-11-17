@@ -57,6 +57,58 @@ def test_default_token_path_honors_xdg_config_home(monkeypatch, tmp_path):
     assert default_token_path() == tmp_path / "modelmanager" / "token"
 
 
+def test_write_then_read_shared_token_round_trips(tmp_path):
+    path = tmp_path / "shared_token"
+    token = auth.generate_token()
+
+    written_path = auth.write_shared_token(token, path=path)
+
+    assert written_path == path
+    assert auth.read_shared_token(path=path) == token
+
+
+def test_shared_token_is_only_readable_by_owner(tmp_path):
+    path = tmp_path / "shared_token"
+    auth.write_shared_token(auth.generate_token(), path=path)
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+
+    assert mode == 0o600
+
+
+def test_read_shared_token_returns_none_when_nothing_configured(tmp_path):
+    assert auth.read_shared_token(path=tmp_path / "does-not-exist") is None
+
+
+def test_shared_token_env_var_wins_over_file(tmp_path, monkeypatch):
+    path = tmp_path / "shared_token"
+    auth.write_shared_token("from-file", path=path)
+    monkeypatch.setenv("MODELMANAGER_SHARED_TOKEN", "from-env")
+
+    assert auth.read_shared_token(path=path) == "from-env"
+
+
+def test_owner_and_shared_tokens_are_independent_files(tmp_path):
+    # The whole point of splitting these out - writing one must never touch
+    # or be confused with the other (see cli.py's _client()).
+    owner_path = tmp_path / "token"
+    shared_path = tmp_path / "shared_token"
+    auth.write_token("owner-value", path=owner_path)
+    auth.write_shared_token("shared-value", path=shared_path)
+
+    assert auth.read_token(path=owner_path) == "owner-value"
+    assert auth.read_shared_token(path=shared_path) == "shared-value"
+
+
+def test_default_shared_token_path_honors_xdg_config_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("MODELMANAGER_SHARED_TOKEN_PATH", raising=False)
+
+    from modelmanager.config import default_shared_token_path
+
+    assert default_shared_token_path() == tmp_path / "modelmanager" / "shared_token"
+
+
 def test_default_tls_paths_honor_xdg_config_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("MODELMANAGER_TLS_CERT_PATH", raising=False)

@@ -26,6 +26,68 @@ def test_client_allows_non_https_url_without_token(monkeypatch):
     client.close()
 
 
+# --- _client: --peer must never send the owner token --------------------
+
+def _known_host_entry(tmp_path):
+    # Deliberately doesn't exist - _client() falls back to the system CA
+    # bundle (verify=True) in that case, which is all these tests care
+    # about; a real PEM isn't needed to test token selection.
+    cert_path = tmp_path / "peer.pem"
+    return {"url": "https://peerbox:8778", "cert_file": str(cert_path)}
+
+
+def test_client_sends_shared_token_not_owner_token_for_peer(monkeypatch, tmp_path):
+    # The whole point of the owner/shared split: a --peer coordinator isn't
+    # this machine, so even a fully malicious/compromised one must never
+    # see this coordinator's own owner token (see auth.read_token's own
+    # docstring on why that would be unrestricted access if replayed back).
+    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
+    monkeypatch.setattr(cli.auth, "read_token", lambda: "owner-token-value")
+    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: "shared-token-value")
+    args = SimpleNamespace(url=None, token=None, peer="alice")
+
+    client = cli._client(args)
+
+    assert client.headers["authorization"] == "Bearer shared-token-value"
+    client.close()
+
+
+def test_client_refuses_peer_request_with_no_shared_token_configured(monkeypatch, tmp_path):
+    # Must fail closed, not silently fall back to the owner token - that
+    # fallback is exactly the vulnerability this split fixes.
+    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
+    monkeypatch.setattr(cli.auth, "read_token", lambda: "owner-token-value")
+    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: None)
+    args = SimpleNamespace(url=None, token=None, peer="alice")
+
+    with pytest.raises(SystemExit):
+        cli._client(args)
+
+
+def test_client_explicit_token_flag_wins_for_peer_too(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
+    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: "shared-token-value")
+    args = SimpleNamespace(url=None, token="explicit-override", peer="alice")
+
+    client = cli._client(args)
+
+    assert client.headers["authorization"] == "Bearer explicit-override"
+    client.close()
+
+
+def test_client_local_url_still_uses_owner_token(monkeypatch):
+    # No --peer: this is the "second machine you yourself own" path
+    # (docs/deployment.md) - it's correct for this to keep using the owner
+    # token, since both ends are genuinely you.
+    monkeypatch.setattr(cli.auth, "read_token", lambda: "owner-token-value")
+    args = SimpleNamespace(url="https://127.0.0.1:8778", token=None, peer=None)
+
+    client = cli._client(args)
+
+    assert client.headers["authorization"] == "Bearer owner-token-value"
+    client.close()
+
+
 # --- _validate_ssh_host / ssh-argument-injection guard -----------------
 
 def test_validate_ssh_host_accepts_plain_alias():

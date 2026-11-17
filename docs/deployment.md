@@ -84,9 +84,16 @@ only matters to you if something *other* than the CLI/plugin needs to call
 the REST API directly (your own app, a script):
 
 ```bash
-modelmanager auth show      # print the current token (and where it came from)
+modelmanager auth show      # print the current (owner) token (and where it came from)
 modelmanager auth rotate    # generate and switch to a new one, no restart needed
 ```
+
+This is the **owner token** - full access, and it should never be sent to
+any coordinator but your own. If you're sharing access with someone else's
+coordinator (or sharing yours with them), see [Sharing access with another
+person](#sharing-access-with-another-person) below for the separate
+`auth show-shared`/`rotate-shared` token that's actually meant to leave this
+machine.
 
 A few things worth knowing:
 
@@ -126,16 +133,20 @@ A few things worth knowing:
 ## Sharing access with another person
 
 The owner token (above) has full access to everything - rotate/revoke it and
-every caller using it loses access, there's no narrower grain for it. For
-sharing specific systems with someone else (a friend on your tailnet, another
-box you don't fully trust with the whole fleet), `modelmanager grant`
-associates a *different* token - one that person generated for their own
-coordinator, not yours - with a name, and then separately grants or revokes
-access to individual systems from your `registry.json` under that name, as
-many times as you like, without ever retyping the token:
+every caller using it loses access, there's no narrower grain for it. **Never
+hand this one to anyone else, and never let it leave this machine** - see the
+warning under [Talking to someone else's coordinator](#talking-to-someone-elses-coordinator-hosts--peer)
+below for exactly what goes wrong if it does. For sharing specific systems
+with someone else (a friend on your tailnet, another box you don't fully
+trust with the whole fleet), `modelmanager grant` associates a *different*
+token - the other person's own **shared token** (`modelmanager auth
+show-shared`/`rotate-shared` on their machine, not their owner token) - with
+a name, and then separately grants or revokes access to individual systems
+from your `registry.json` under that name, as many times as you like,
+without ever retyping the token:
 
 ```bash
-modelmanager grant add bob <the-token-bob-shared-with-you>   # no system access yet
+modelmanager grant add bob <the-SHARED-token-bob-shared-with-you>   # no system access yet
 modelmanager grant allow bob systemB
 modelmanager grant allow bob systemC
 modelmanager grant revoke bob systemB     # bob keeps systemC
@@ -243,11 +254,40 @@ modelmanager --peer alice list
 modelmanager --peer alice ensure some-model
 ```
 
-Your own token (the same one you'd use locally) is what gets sent - whatever
-systems alice granted it covers, nothing more (see `modelmanager grant`
-above). `--peer` and the three env vars are independent mechanisms; use
-whichever fits - `--peer` for a coordinator you've TOFU-trusted by name,
-the env vars for one you fully own and can copy files from directly.
+Your **shared token** (`modelmanager auth show-shared`/`rotate-shared` -
+*not* your owner token) is what gets sent - whatever systems alice granted
+it covers, nothing more (see `modelmanager grant` above). `--peer` and the
+three env vars are independent mechanisms; use whichever fits - `--peer`
+for a coordinator you've TOFU-trusted by name but don't own, the env vars
+for one you fully own and can copy files from directly (that path keeps
+using your owner token - see its own callout above - because it genuinely
+is you reaching across two of your own machines, not a request to someone
+else's coordinator).
+
+**Why a separate token, and why this matters:** the owner token is what
+*your own* coordinator checks every incoming request against for full
+access (`install_auth_middleware` in `coordinator/app.py`). If that exact
+value were ever sent to someone else's coordinator - which is what this
+project used to do before this token was split out - a malicious or
+compromised peer on the other end would be holding a credential that grants
+*full, unrestricted access back to your own coordinator*: registry writes
+(new/edited engines, i.e. arbitrary binaries) and starting whatever's
+configured, as your own user. `allowed_systems`/TLS fingerprint pinning
+don't help here - they constrain what *you* can do on *their* box, not what
+a peer can do back on yours with a token it captured. The shared token
+closes that off: even fully captured, it matches neither your owner token
+nor (normally) anything in your own `grants.json`, so replaying it against
+your own coordinator just gets a 401.
+
+**This doesn't mean `--peer`/`grant` is now safe against a genuinely
+adversarial, unknown peer** - it still means exactly what the design always
+implied: these are for sharing access with someone whose identity you've
+confirmed (the TOFU fingerprint check) and whose judgment you trust enough
+to hand them `ensure`/`stop`/`logs` on specific systems. That's a real trust
+relationship, not an open API - keep granting as narrow (`allowed_systems`)
+and as few names as you actually need, the same way you'd think about
+handing someone an SSH key scoped to one host rather than root on
+everything.
 
 **If you think a trusted coordinator's cert was compromised** (alice's
 machine was compromised, or you suspect the *original* trust was never

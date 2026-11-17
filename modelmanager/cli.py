@@ -15,7 +15,7 @@ import httpx
 from pydantic import ValidationError
 
 from . import auth, grants, known_hosts
-from .config import default_tls_cert_path, default_tls_key_path, load_registry
+from .config import default_shared_token_path, default_tls_cert_path, default_tls_key_path, load_registry
 
 DEFAULT_SERVE_HOST = os.environ.get("MODELMANAGER_HOST", "0.0.0.0")
 DEFAULT_SERVE_PORT = int(os.environ.get("MODELMANAGER_PORT", "8778"))
@@ -31,18 +31,16 @@ DEFAULT_URL = os.environ.get("MODELMANAGER_URL", f"https://127.0.0.1:{DEFAULT_SE
 
 
 def _client(args, timeout: float = 30) -> httpx.Client:
-    # --token wins outright; otherwise the same MODELMANAGER_TOKEN-then-file
-    # resolution the coordinator itself uses (see auth.read_token) - so the
-    # bar plugin, which only ever shells out to this CLI, authenticates for
-    # free with no changes of its own, as long as it's running as the same
-    # user that ran scripts/setup.sh. This same token is what gets presented
-    # to a *remote* coordinator too (via --peer below) - whoever granted you
-    # access already has a hash of this exact value (see grants.py), there's
-    # no separate per-peer credential to manage.
-    token = args.token or auth.read_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    url = args.url
-    cert_path = default_tls_cert_path()
+    # --peer resolved first, since it changes which token is even correct to
+    # read below - a --peer coordinator isn't this machine, so it must never
+    # receive the owner token (full access to *this* coordinator): a
+    # malicious or compromised peer that captured it could replay it right
+    # back here for unrestricted registry writes and arbitrary process
+    # launches (see adapters/process.py), since this coordinator's own auth
+    # middleware would see its own owner token and grant full access. The
+    # dedicated shared token (auth.read_shared_token/`auth rotate-shared`)
+    # is what grants.py on the other end actually needs - a value that, if
+    # it ever leaks, is useless against this coordinator specifically.
     peer = getattr(args, "peer", None)
     if peer:
         entry = known_hosts.get_known_host(peer)
@@ -51,6 +49,27 @@ def _client(args, timeout: float = 30) -> httpx.Client:
             sys.exit(1)
         url = entry["url"]
         cert_path = Path(entry["cert_file"])
+        token = args.token or auth.read_shared_token()
+        if token is None:
+            print(json.dumps({
+                "error": "no shared token configured - run `modelmanager auth rotate-shared` and give that "
+                         "value (never your owner token from `auth show`) to whoever ran `grant add` for you",
+            }))
+            sys.exit(1)
+    else:
+        # --token wins outright; otherwise the same MODELMANAGER_TOKEN-then-
+        # file resolution the coordinator itself uses (see auth.read_token) -
+        # so the bar plugin, which only ever shells out to this CLI,
+        # authenticates for free with no changes of its own, as long as it's
+        # running as the same user that ran scripts/setup.sh. This is also
+        # the correct token for a bare --url/MODELMANAGER_URL pointed at a
+        # *second coordinator you yourself own* (see docs/deployment.md) -
+        # that's genuinely the same owner identity reaching across two of
+        # your own machines, unlike --peer above.
+        token = args.token or auth.read_token()
+        url = args.url
+        cert_path = default_tls_cert_path()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     # The coordinator's cert is self-signed (scripts/setup.sh), so it isn't
     # in any system CA bundle - pass it explicitly as the thing to trust,
     # same as copying the token, rather than verify=False (which would
@@ -851,10 +870,15 @@ def cmd_reload_status(args) -> int:
 
 def cmd_auth(args) -> int:
     # The one command family that never calls _client()/the REST API at all:
-    # it manages the credential that every other command needs to call it in
+    # it manages the credentials every other command needs to call it in
     # the first place (chicken-and-egg for "rotate", and "show" exists
     # specifically to retrieve the local secret for copying into some other
-    # app). Reads/writes the token file directly instead.
+    # app). Reads/writes the token files directly instead.
+    #
+    # "-shared" manages a *separate* token/file from the plain owner token
+    # above - the one this machine hands to someone else's coordinator via
+    # --peer (see `modelmanager grant add` on their end, and _client()'s own
+    # comment on why these must never be the same value).
     if args.action == "show":
         token = auth.read_token()
         if token is None:
@@ -862,6 +886,19 @@ def cmd_auth(args) -> int:
             return 1
         source = "MODELMANAGER_TOKEN env var" if os.environ.get("MODELMANAGER_TOKEN") else str(auth.default_token_path())
         print(json.dumps({"token": token, "source": source}))
+        return 0
+    if args.action == "show-shared":
+        token = auth.read_shared_token()
+        if token is None:
+            print(json.dumps({"error": "no shared token configured - run `modelmanager auth rotate-shared`"}))
+            return 1
+        source = "MODELMANAGER_SHARED_TOKEN env var" if os.environ.get("MODELMANAGER_SHARED_TOKEN") else str(default_shared_token_path())
+        print(json.dumps({"token": token, "source": source}))
+        return 0
+    if args.action == "rotate-shared":
+        token = auth.generate_token()
+        path = auth.write_shared_token(token)
+        print(json.dumps({"token": token, "path": str(path), "rotated": True}))
         return 0
     token = auth.generate_token()
     path = auth.write_token(token)
@@ -1276,8 +1313,13 @@ def put(ctx, resource, name, json_body):
     _run(ctx, cmd_put, resource=resource, name=name, json=json_body)
 
 
-@cli.command("auth", help="manage the local REST API bearer token (reads/writes the token file directly - no coordinator needed)")
-@click.argument("action", type=click.Choice(["show", "rotate"]))
+@cli.command(
+    "auth",
+    help="manage REST API bearer tokens (reads/writes the token files directly - no coordinator needed): "
+         "show/rotate for the owner token, show-shared/rotate-shared for the separate token to hand to "
+         "someone else's coordinator via --peer",
+)
+@click.argument("action", type=click.Choice(["show", "rotate", "show-shared", "rotate-shared"]))
 @click.pass_context
 def auth_cmd(ctx, action):
     _run(ctx, cmd_auth, action=action)
