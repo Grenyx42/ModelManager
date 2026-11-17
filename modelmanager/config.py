@@ -299,18 +299,6 @@ def default_token_path() -> Path:
     return Path(xdg_config) / "modelmanager" / "token"
 
 
-def default_shared_token_path() -> Path:
-    """Where `modelmanager auth rotate-shared` writes the token you hand to
-    OTHER people's coordinators (what their `grant add` registers for you) -
-    deliberately a separate file/value from default_token_path()'s owner
-    token, which must never leave this machine. See cli.py's _client()."""
-    env_path = os.environ.get("MODELMANAGER_SHARED_TOKEN_PATH")
-    if env_path:
-        return Path(env_path)
-    xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(xdg_config) / "modelmanager" / "shared_token"
-
-
 def default_grants_path() -> Path:
     env_path = os.environ.get("MODELMANAGER_GRANTS_PATH")
     if env_path:

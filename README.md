@@ -74,6 +74,13 @@ it's wired up.
   the panel's "Coordinator" field let someone point at *your* coordinator
   the same way you'd point at your own. See [Sharing access with another
   person](docs/deployment.md#sharing-access-with-another-person).
+- **Sharing is for people you actually trust - friends, not strangers.**
+  Tokens are scoped and revocable, each peer gets its own credential, and
+  secrets are written and stored carefully - that's real defense-in-depth
+  for mistakes and compromise, not a claim that handing access to someone
+  you don't know and trust is safe. Treat a grant the way you'd treat
+  handing someone an SSH key: fine for a friend you're pooling GPUs with,
+  never for a stranger on the internet.
 
 ```
 Apps, or the Omarchy bar plugin

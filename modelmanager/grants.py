@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import default_grants_path
+from .secret_files import write_secret_file
 
 
 def hash_token(token: str) -> str:
@@ -36,15 +36,11 @@ def load_grants(path: Path | None = None) -> list[dict]:
 def save_grants(grants: list[dict], path: Path | None = None) -> Path:
     """Writes grants.json 0600 (token hashes aren't reversible, but there's no
     reason to let other local users enumerate who's been granted access) -
-    atomic replace, same pattern as Manager._persist()'s registry writes.
-    Read fresh on every auth check (see coordinator.app.install_auth_middleware)
+    atomic, symlink-safe replace (see secret_files.write_secret_file). Read
+    fresh on every auth check (see coordinator.app.install_auth_middleware)
     so grant add/remove needs no coordinator restart, matching auth.read_token()."""
     path = path or default_grants_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps({"grants": grants}, indent=2) + "\n")
-    tmp_path.chmod(0o600)
-    os.replace(tmp_path, path)
+    write_secret_file(path, json.dumps({"grants": grants}, indent=2) + "\n")
     return path
 
 

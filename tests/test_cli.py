@@ -28,36 +28,39 @@ def test_client_allows_non_https_url_without_token(monkeypatch):
 
 # --- _client: --peer must never send the owner token --------------------
 
-def _known_host_entry(tmp_path):
-    # Deliberately doesn't exist - _client() falls back to the system CA
-    # bundle (verify=True) in that case, which is all these tests care
-    # about; a real PEM isn't needed to test token selection.
+def _known_host_entry(tmp_path, token="peer-token-value"):
+    # cert_file deliberately doesn't exist - _client() falls back to the
+    # system CA bundle (verify=True) in that case, which is all these tests
+    # care about; a real PEM isn't needed to test token selection.
     cert_path = tmp_path / "peer.pem"
-    return {"url": "https://peerbox:8778", "cert_file": str(cert_path)}
+    entry = {"url": "https://peerbox:8778", "cert_file": str(cert_path)}
+    if token is not None:
+        entry["token"] = token
+    return entry
 
 
-def test_client_sends_shared_token_not_owner_token_for_peer(monkeypatch, tmp_path):
-    # The whole point of the owner/shared split: a --peer coordinator isn't
-    # this machine, so even a fully malicious/compromised one must never
-    # see this coordinator's own owner token (see auth.read_token's own
-    # docstring on why that would be unrestricted access if replayed back).
+def test_client_sends_per_peer_token_not_owner_token_for_peer(monkeypatch, tmp_path):
+    # The whole point of the owner/per-peer split: a --peer coordinator
+    # isn't this machine, so even a fully malicious/compromised one must
+    # never see this coordinator's own owner token (see auth.read_token's
+    # own docstring on why that would be unrestricted access if replayed
+    # back).
     monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
     monkeypatch.setattr(cli.auth, "read_token", lambda: "owner-token-value")
-    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: "shared-token-value")
     args = SimpleNamespace(url=None, token=None, peer="alice")
 
     client = cli._client(args)
 
-    assert client.headers["authorization"] == "Bearer shared-token-value"
+    assert client.headers["authorization"] == "Bearer peer-token-value"
     client.close()
 
 
-def test_client_refuses_peer_request_with_no_shared_token_configured(monkeypatch, tmp_path):
+def test_client_refuses_peer_request_with_no_token_saved_for_that_peer(monkeypatch, tmp_path):
     # Must fail closed, not silently fall back to the owner token - that
-    # fallback is exactly the vulnerability this split fixes.
-    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
+    # fallback is exactly the vulnerability this split fixes. Only reachable
+    # for a known_hosts.json entry saved before per-peer tokens existed.
+    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path, token=None))
     monkeypatch.setattr(cli.auth, "read_token", lambda: "owner-token-value")
-    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: None)
     args = SimpleNamespace(url=None, token=None, peer="alice")
 
     with pytest.raises(SystemExit):
@@ -66,12 +69,27 @@ def test_client_refuses_peer_request_with_no_shared_token_configured(monkeypatch
 
 def test_client_explicit_token_flag_wins_for_peer_too(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: _known_host_entry(tmp_path))
-    monkeypatch.setattr(cli.auth, "read_shared_token", lambda: "shared-token-value")
     args = SimpleNamespace(url=None, token="explicit-override", peer="alice")
 
     client = cli._client(args)
 
     assert client.headers["authorization"] == "Bearer explicit-override"
+    client.close()
+
+
+def test_client_uses_the_right_peers_token_not_another_peers(monkeypatch, tmp_path):
+    # Each known_hosts entry carries its own token - a captured one must
+    # only ever be sent to the peer it was generated for.
+    entries = {
+        "alice": _known_host_entry(tmp_path, token="alices-token"),
+        "bob": _known_host_entry(tmp_path, token="bobs-token"),
+    }
+    monkeypatch.setattr(cli.known_hosts, "get_known_host", lambda name: entries[name])
+    args = SimpleNamespace(url=None, token=None, peer="bob")
+
+    client = cli._client(args)
+
+    assert client.headers["authorization"] == "Bearer bobs-token"
     client.close()
 
 
@@ -329,7 +347,7 @@ def test_hosts_add_accepts_matching_fingerprint(monkeypatch):
     monkeypatch.setattr(
         known_hosts, "add_known_host",
         lambda name, url, pem, fingerprint: add_called.append((name, url, pem, fingerprint)) or {
-            "url": url, "fingerprint": fingerprint,
+            "url": url, "fingerprint": fingerprint, "token": "peer-token-value",
         },
     )
 
@@ -337,3 +355,41 @@ def test_hosts_add_accepts_matching_fingerprint(monkeypatch):
 
     assert rc == 0
     assert add_called == [("peerbox", "https://peerbox:8778", "PEM", "AA:BB")]
+
+
+def test_hosts_add_prints_the_peer_token(monkeypatch, capsys):
+    # The caller needs this to actually hand to the peer's owner for their
+    # `grant add` - it has to be in the result, not just saved silently.
+    monkeypatch.setattr(cli, "_fetch_cert_fingerprint", lambda url: ("PEM", "AA:BB"))
+    monkeypatch.setattr(
+        known_hosts, "add_known_host",
+        lambda name, url, pem, fingerprint: {"url": url, "fingerprint": fingerprint, "token": "peer-token-value"},
+    )
+
+    rc = cli.cmd_hosts(_hosts_add_args(expect_fingerprint="AA:BB"))
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["token"] == "peer-token-value"
+
+
+# --- hosts rotate-token --------------------------------------------------
+
+def test_hosts_rotate_token_prints_the_new_token(monkeypatch, capsys):
+    monkeypatch.setattr(known_hosts, "rotate_host_token", lambda name: {"token": "new-token-value"})
+
+    rc = cli.cmd_hosts(SimpleNamespace(hosts_action="rotate-token", name="peerbox"))
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"name": "peerbox", "token": "new-token-value"}
+
+
+def test_hosts_rotate_token_fails_for_unknown_host(monkeypatch, capsys):
+    monkeypatch.setattr(known_hosts, "rotate_host_token", lambda name: None)
+
+    rc = cli.cmd_hosts(SimpleNamespace(hosts_action="rotate-token", name="nobody"))
+
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert "error" in out

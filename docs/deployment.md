@@ -91,9 +91,8 @@ modelmanager auth rotate    # generate and switch to a new one, no restart neede
 This is the **owner token** - full access, and it should never be sent to
 any coordinator but your own. If you're sharing access with someone else's
 coordinator (or sharing yours with them), see [Sharing access with another
-person](#sharing-access-with-another-person) below for the separate
-`auth show-shared`/`rotate-shared` token that's actually meant to leave this
-machine.
+person](#sharing-access-with-another-person) below - that uses its own,
+separate per-peer token, never this one.
 
 A few things worth knowing:
 
@@ -132,6 +131,16 @@ A few things worth knowing:
 
 ## Sharing access with another person
 
+**This is for people you trust, not an access-control system meant to
+withstand a hostile stranger.** `grant`/`hosts`/`--peer` give scoped,
+revocable access with a distinct credential per peer, carefully-written
+secret files, and TLS pinning - real defense-in-depth against mistakes,
+compromise, and simple misuse. They are not a claim that handing access to
+someone whose judgment you don't trust is safe, any more than handing
+someone your SSH key to one box would be. Use this the way it's meant to be
+used: a friend on your tailnet you're pooling GPUs with, not a public
+service.
+
 The owner token (above) has full access to everything - rotate/revoke it and
 every caller using it loses access, there's no narrower grain for it. **Never
 hand this one to anyone else, and never let it leave this machine** - see the
@@ -139,14 +148,15 @@ warning under [Talking to someone else's coordinator](#talking-to-someone-elses-
 below for exactly what goes wrong if it does. For sharing specific systems
 with someone else (a friend on your tailnet, another box you don't fully
 trust with the whole fleet), `modelmanager grant` associates a *different*
-token - the other person's own **shared token** (`modelmanager auth
-show-shared`/`rotate-shared` on their machine, not their owner token) - with
-a name, and then separately grants or revokes access to individual systems
-from your `registry.json` under that name, as many times as you like,
-without ever retyping the token:
+token - bob's own **per-peer token**, generated on *his* machine specifically
+for *you* (`modelmanager hosts add` prints it - see "Talking to someone
+else's coordinator" below - never his owner token) - with a name, and then
+separately grants or revokes access to individual systems from your
+`registry.json` under that name, as many times as you like, without ever
+retyping the token:
 
 ```bash
-modelmanager grant add bob <the-SHARED-token-bob-shared-with-you>   # no system access yet
+modelmanager grant add bob <the-token-bob-shared-with-you>   # no system access yet
 modelmanager grant allow bob systemB
 modelmanager grant allow bob systemC
 modelmanager grant revoke bob systemB     # bob keeps systemC
@@ -158,7 +168,8 @@ This is local-only (reads/writes `~/.config/modelmanager/grants.json`
 directly, like `auth show`/`rotate`) - no coordinator restart needed, same as
 rotating the owner token. Re-running `grant add` for a name that already
 exists rotates its token but leaves `allowed_systems` untouched - handy when
-bob rotates his own token without losing whatever you'd already granted him.
+bob rotates his per-peer token for you (`modelmanager hosts rotate-token you`
+on his end) without losing whatever you'd already granted him.
 Once allowed a system, a request bearing that token can read and operate
 (`ensure`/`stop`/`verify`/`logs`/group actions) on anything tied to it, but
 can never write registry config, and never sees `doctor`,
@@ -245,39 +256,51 @@ before accepting. For scripting, `modelmanager hosts probe` first and pass
 that fingerprint back via `--yes --expect-fingerprint <fingerprint>` -
 `hosts add` refuses `--yes` without it, so a script can't skip verification
 by accident, and a cert that changed between the two calls (e.g. an active
-interception) is caught instead of silently trusted. Once trusted,
-target that coordinator by name instead of juggling `MODELMANAGER_URL`/
-`_TOKEN`/`_TLS_CERT_PATH` yourself:
+interception) is caught instead of silently trusted.
+
+`hosts add` also generates a fresh **per-peer token** the first time you
+trust a given name, and prints it right alongside the fingerprint - give
+that value (not your owner token from `auth show`) to alice so she can run
+`grant add you <that-token>` on her end. Once trusted, target that
+coordinator by name instead of juggling `MODELMANAGER_URL`/`_TOKEN`/
+`_TLS_CERT_PATH` yourself:
 
 ```bash
 modelmanager --peer alice list
 modelmanager --peer alice ensure some-model
 ```
 
-Your **shared token** (`modelmanager auth show-shared`/`rotate-shared` -
-*not* your owner token) is what gets sent - whatever systems alice granted
-it covers, nothing more (see `modelmanager grant` above). `--peer` and the
-three env vars are independent mechanisms; use whichever fits - `--peer`
-for a coordinator you've TOFU-trusted by name but don't own, the env vars
-for one you fully own and can copy files from directly (that path keeps
-using your owner token - see its own callout above - because it genuinely
-is you reaching across two of your own machines, not a request to someone
-else's coordinator).
+The per-peer token saved for `alice` is what gets sent - whatever systems
+she granted it covers, nothing more (see `modelmanager grant` above).
+`--peer` and the three env vars are independent mechanisms; use whichever
+fits - `--peer` for a coordinator you've TOFU-trusted by name but don't own,
+the env vars for one you fully own and can copy files from directly (that
+path keeps using your owner token - see its own callout above - because it
+genuinely is you reaching across two of your own machines, not a request to
+someone else's coordinator).
 
-**Why a separate token, and why this matters:** the owner token is what
-*your own* coordinator checks every incoming request against for full
-access (`install_auth_middleware` in `coordinator/app.py`). If that exact
-value were ever sent to someone else's coordinator - which is what this
-project used to do before this token was split out - a malicious or
-compromised peer on the other end would be holding a credential that grants
-*full, unrestricted access back to your own coordinator*: registry writes
-(new/edited engines, i.e. arbitrary binaries) and starting whatever's
-configured, as your own user. `allowed_systems`/TLS fingerprint pinning
-don't help here - they constrain what *you* can do on *their* box, not what
-a peer can do back on yours with a token it captured. The shared token
-closes that off: even fully captured, it matches neither your owner token
-nor (normally) anything in your own `grants.json`, so replaying it against
-your own coordinator just gets a 401.
+Suspect a particular peer's token leaked, or want to rotate it without
+re-confirming their cert? `modelmanager hosts rotate-token alice` replaces
+just that value (url/cert/fingerprint untouched) - hand the new one to
+alice the same way.
+
+**Why per-peer, and why this matters:** the owner token is what *your own*
+coordinator checks every incoming request against for full access
+(`install_auth_middleware` in `coordinator/app.py`). If that exact value
+were ever sent to someone else's coordinator - which is what this project
+used to do before this was split out - a malicious or compromised peer on
+the other end would be holding a credential that grants *full, unrestricted
+access back to your own coordinator*: registry writes (new/edited engines,
+i.e. arbitrary binaries) and starting whatever's configured, as your own
+user. `allowed_systems`/TLS fingerprint pinning don't help here - they
+constrain what *you* can do on *their* box, not what a peer can do back on
+yours with a token it captured. And a single value shared across *every*
+peer wouldn't be enough either: any one captured/malicious peer could then
+replay it at every *other* peer who also trusts it and impersonate you
+there too. A distinct token per known_hosts entry closes both: even fully
+captured, it matches neither your owner token nor (normally) anything in
+your own `grants.json`, and it's useless against any peer other than the
+one it was generated for - replaying it anywhere else just gets a 401.
 
 **This doesn't mean `--peer`/`grant` is now safe against a genuinely
 adversarial, unknown peer** - it still means exactly what the design always
@@ -299,7 +322,9 @@ alice` stops working immediately, nothing stale is left trusted. Re-running
 fingerprint for you to confirm again, even if you'd trusted that name
 before - it never silently re-trusts a changed cert without showing it to
 you first. Confirm the new fingerprint out-of-band again before accepting,
-exactly as the first time.
+exactly as the first time. Since `remove` deleted the whole entry, this also
+generates a brand-new per-peer token - give it to alice again before
+`--peer alice` can do anything that needs her grant.
 
 ## Windows boxes
 
