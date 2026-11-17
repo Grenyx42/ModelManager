@@ -50,8 +50,9 @@ def add_grant(name: str, token: str, path: Path | None = None) -> dict:
     gets granted or taken away afterward, one system at a time, without
     ever having to retype the token. Re-running this for an existing name
     (e.g. they rotated their token) replaces token_hash but preserves
-    whatever allowed_systems/created_at were already there - rotating a
-    token shouldn't silently wipe someone's existing access."""
+    whatever allowed_systems/system_expirations/created_at were already
+    there - rotating a token shouldn't silently wipe someone's existing
+    access."""
     grants = load_grants(path)
     existing = next((g for g in grants if g["name"] == name), None)
     grants = [g for g in grants if g["name"] != name]
@@ -59,6 +60,10 @@ def add_grant(name: str, token: str, path: Path | None = None) -> dict:
         "name": name,
         "token_hash": hash_token(token),
         "allowed_systems": list(existing["allowed_systems"]) if existing else [],
+        # {system: iso8601-expiry} for the subset of allowed_systems granted
+        # temporarily (see allow_system's `expires_at`) - a system with no
+        # entry here never expires. Sparse: most grants will never use this.
+        "system_expirations": dict(existing.get("system_expirations", {})) if existing else {},
         "created_at": existing["created_at"] if existing else datetime.now(timezone.utc).isoformat(),
     }
     grants.append(entry)
@@ -75,15 +80,30 @@ def remove_grant(name: str, path: Path | None = None) -> bool:
     return True
 
 
-def allow_system(name: str, system: str, path: Path | None = None) -> dict | None:
+def allow_system(name: str, system: str, path: Path | None = None, expires_at: str | None = None) -> dict | None:
     """Adds one system to an existing grant's allowed_systems (idempotent -
     already-allowed is a no-op, not an error). None if `name` isn't a known
-    grant (register it with `grant add` first)."""
+    grant (register it with `grant add` first).
+
+    `expires_at` (an ISO8601 UTC timestamp - see cli.py's `--expires-in`,
+    which turns a duration like "8h" into one) makes this system's access
+    temporary: effective_allowed_systems() below stops counting it once
+    that time passes, with no need to remember to revoke it afterward -
+    built for exactly the "everyone pools GPUs for one night" case, where a
+    standing grant would otherwise quietly outlive the night it was meant
+    for. Re-running `allow` for a system that's already allowed updates
+    (or, with expires_at=None, clears) its expiry rather than stacking -
+    whatever this call asks for is what takes effect."""
     grants = load_grants(path)
     for entry in grants:
         if entry["name"] == name:
             if system not in entry["allowed_systems"]:
                 entry["allowed_systems"].append(system)
+            expirations = entry.setdefault("system_expirations", {})
+            if expires_at is None:
+                expirations.pop(system, None)
+            else:
+                expirations[system] = expires_at
             save_grants(grants, path)
             return entry
     return None
@@ -98,9 +118,50 @@ def revoke_system(name: str, system: str, path: Path | None = None) -> dict | No
         if entry["name"] == name:
             if system in entry["allowed_systems"]:
                 entry["allowed_systems"].remove(system)
+            entry.get("system_expirations", {}).pop(system, None)
             save_grants(grants, path)
             return entry
     return None
+
+
+def effective_allowed_systems(grant: dict) -> set[str]:
+    """allowed_systems minus anything whose per-system expiry
+    (system_expirations) has passed - checked fresh against the current
+    time on every call, same as grants.json itself is read fresh on every
+    request (install_auth_middleware), so there's no caching or background
+    cleanup job to keep in sync. A malformed timestamp fails closed
+    (treated as expired) rather than granting indefinite access off bad
+    data."""
+    now = datetime.now(timezone.utc)
+    expirations = grant.get("system_expirations", {})
+    result = set()
+    for system in grant.get("allowed_systems", []):
+        expires_at = expirations.get(system)
+        if expires_at is None:
+            result.add(system)
+            continue
+        try:
+            if datetime.fromisoformat(expires_at) > now:
+                result.add(system)
+        except ValueError:
+            continue
+    return result
+
+
+def revoke_all(path: Path | None = None) -> list[dict]:
+    """Panic button: clears allowed_systems/system_expirations for every
+    grant at once, but keeps each identity (name + token_hash +
+    created_at) - for "someone's box might be compromised, cut everyone
+    off *right now*" without having to first work out who was granted what,
+    and without losing the token bookkeeping needed to `allow` again once
+    things are sorted out. `grant remove` (deleting identities outright) is
+    still there for when you actually want that instead."""
+    grants = load_grants(path)
+    for entry in grants:
+        entry["allowed_systems"] = []
+        entry["system_expirations"] = {}
+    save_grants(grants, path)
+    return grants
 
 
 def find_grant_by_token(token: str, path: Path | None = None) -> dict | None:

@@ -234,6 +234,69 @@ def test_grant_token_is_accepted_and_scoped_to_its_systems(tmp_path, monkeypatch
     assert write_attempt.json()["code"] == "FORBIDDEN"
 
 
+def test_expired_system_grant_is_rejected(tmp_path, monkeypatch):
+    # The actual enforcement point for grant allow --expires-in - everything
+    # else (parsing the duration, storing the timestamp) is only correct if
+    # a request against an already-past expiry really does get a 403.
+    _minimal_app_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps({
+        "systems": {
+            "sys-a": {"os": "linux", "control": "local"},
+            "sys-b": {"os": "linux", "control": "local"},
+        },
+        "gpu_groups": {}, "engines": {}, "models": {},
+    }))
+
+    from datetime import datetime, timedelta, timezone
+
+    from modelmanager import grants
+    from modelmanager.coordinator.app import create_app
+
+    grants.add_grant("bob", "bobs-token")
+    grants.allow_system("bob", "sys-a")  # standing access, never expires
+    grants.allow_system(
+        "bob", "sys-b",
+        expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+
+    with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
+        still_allowed = client.get("/v1/systems/sys-a")
+        expired = client.get("/v1/systems/sys-b")
+        listed = client.get("/v1/systems")
+
+    assert still_allowed.status_code == 200
+    assert expired.status_code == 403
+    assert set(listed.json()) == {"sys-a"}
+
+
+def test_not_yet_expired_system_grant_is_still_accepted(tmp_path, monkeypatch):
+    _minimal_app_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps({
+        "systems": {"sys-a": {"os": "linux", "control": "local"}},
+        "gpu_groups": {}, "engines": {}, "models": {},
+    }))
+
+    from datetime import datetime, timedelta, timezone
+
+    from modelmanager import grants
+    from modelmanager.coordinator.app import create_app
+
+    grants.add_grant("bob", "bobs-token")
+    grants.allow_system(
+        "bob", "sys-a",
+        expires_at=(datetime.now(timezone.utc) + timedelta(hours=8)).isoformat(),
+    )
+
+    with TestClient(create_app(), headers={"Authorization": "Bearer bobs-token"}) as client:
+        resp = client.get("/v1/systems/sys-a")
+
+    assert resp.status_code == 200
+
+
 def test_grant_filters_dump_all_endpoints_and_blocks_model_actions_outside_scope(tmp_path, monkeypatch):
     _minimal_app_env(tmp_path, monkeypatch)
     monkeypatch.setenv("MODELMANAGER_TOKEN", "owner-token")

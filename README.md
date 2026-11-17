@@ -80,7 +80,10 @@ it's wired up.
   for mistakes and compromise, not a claim that handing access to someone
   you don't know and trust is safe. Treat a grant the way you'd treat
   handing someone an SSH key: fine for a friend you're pooling GPUs with,
-  never for a stranger on the internet.
+  never for a stranger on the internet. Access can also be time-boxed
+  (`grant allow ... --expires-in 8h`) for a one-night "everyone pools
+  everything" session, and a single `grant revoke-all` cuts off every
+  peer at once if a box ever turns up compromised.
 
 ```
 Apps, or the Omarchy bar plugin

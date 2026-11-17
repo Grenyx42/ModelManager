@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from .. import access_log, agent_deploy, cpu_stats, gpu_stats, lifecycle_log
+from .. import access_log, agent_deploy, cpu_stats, gpu_stats, grants, lifecycle_log
 from ..adapters.factory import build_runner
 from ..errors import ForbiddenError, ModelManagerError, NotFoundError
 from ..schema_help import API_VERSION, build_help
@@ -32,12 +32,14 @@ def _require_owner(request: Request) -> None:
 
 def _allowed_systems(request: Request, registry) -> set[str] | None:
     """None means unrestricted (owner token). Otherwise the grant's
-    allowed_systems intersected with systems that actually still exist (a
-    grant naming a since-removed system just sees nothing for it)."""
+    *currently effective* allowed_systems (see grants.effective_allowed_systems
+    - excludes anything whose temporary access has expired) intersected with
+    systems that actually still exist (a grant naming a since-removed system
+    just sees nothing for it)."""
     grant = _grant(request)
     if grant is None:
         return None
-    return set(grant["allowed_systems"]) & set(registry.systems)
+    return grants.effective_allowed_systems(grant) & set(registry.systems)
 
 
 def _check_system_access(request: Request, systems: set[str]) -> None:
@@ -55,7 +57,7 @@ def _check_system_access(request: Request, systems: set[str]) -> None:
     grant = _grant(request)
     if grant is None:
         return
-    if not systems & set(grant["allowed_systems"]):
+    if not systems & grants.effective_allowed_systems(grant):
         raise ForbiddenError(f"grant {grant['name']!r} has no access to this resource")
 
 

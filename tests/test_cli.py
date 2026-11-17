@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -417,3 +418,114 @@ def test_hosts_rotate_token_fails_for_unknown_host(monkeypatch, capsys):
     assert rc == 1
     out = json.loads(capsys.readouterr().out)
     assert "error" in out
+
+
+# --- _parse_duration_seconds ---------------------------------------------
+
+@pytest.mark.parametrize("value,seconds", [
+    ("30", 30), ("30s", 30), ("5m", 300), ("8h", 28800), ("2d", 172800),
+])
+def test_parse_duration_seconds_accepts_bare_number_and_suffixes(value, seconds):
+    assert cli._parse_duration_seconds(value) == seconds
+
+
+@pytest.mark.parametrize("value", ["", "abc", "8x", "-5h", "5 h"])
+def test_parse_duration_seconds_rejects_invalid_input(value):
+    with pytest.raises(ValueError):
+        cli._parse_duration_seconds(value)
+
+
+# --- cmd_grant: allow --expires-in ----------------------------------------
+
+def _fake_registry_with_system(system_name):
+    return SimpleNamespace(systems={system_name: object()})
+
+
+def test_grant_allow_with_expires_in_passes_a_computed_expires_at(monkeypatch):
+    monkeypatch.setattr(cli, "load_registry", lambda: _fake_registry_with_system("sys-a"))
+    captured = {}
+
+    def fake_allow_system(name, system, expires_at=None):
+        captured["name"] = name
+        captured["system"] = system
+        captured["expires_at"] = expires_at
+        return {"name": name, "allowed_systems": [system], "system_expirations": {system: expires_at}}
+
+    monkeypatch.setattr(cli.grants, "allow_system", fake_allow_system)
+    args = SimpleNamespace(grant_action="allow", name="bob", system="sys-a", expires_in="8h")
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 0
+    assert captured["expires_at"] is not None
+    expires_at = datetime.fromisoformat(captured["expires_at"])
+    expected = datetime.now(timezone.utc) + timedelta(hours=8)
+    assert abs((expires_at - expected).total_seconds()) < 5
+
+
+def test_grant_allow_without_expires_in_passes_none(monkeypatch):
+    monkeypatch.setattr(cli, "load_registry", lambda: _fake_registry_with_system("sys-a"))
+    captured = {}
+
+    def fake_allow_system(name, system, expires_at=None):
+        captured["expires_at"] = expires_at
+        return {"name": name, "allowed_systems": [system], "system_expirations": {}}
+
+    monkeypatch.setattr(cli.grants, "allow_system", fake_allow_system)
+    args = SimpleNamespace(grant_action="allow", name="bob", system="sys-a", expires_in=None)
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 0
+    assert captured["expires_at"] is None
+
+
+def test_grant_allow_rejects_an_invalid_duration(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_registry", lambda: _fake_registry_with_system("sys-a"))
+    called = []
+    monkeypatch.setattr(cli.grants, "allow_system", lambda *a, **k: called.append(1))
+    args = SimpleNamespace(grant_action="allow", name="bob", system="sys-a", expires_in="not-a-duration")
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 1
+    assert called == []
+    out = json.loads(capsys.readouterr().out)
+    assert "error" in out
+
+
+# --- cmd_grant: revoke-all panic button -----------------------------------
+
+def test_grant_revoke_all_with_yes_skips_confirmation(monkeypatch, capsys):
+    monkeypatch.setattr(cli.grants, "revoke_all", lambda: [{"name": "bob", "allowed_systems": []}])
+    args = SimpleNamespace(grant_action="revoke-all", yes=True)
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == [{"name": "bob", "allowed_systems": []}]
+
+
+def test_grant_revoke_all_without_yes_requires_confirmation(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr(cli.grants, "revoke_all", lambda: called.append(1))
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    args = SimpleNamespace(grant_action="revoke-all", yes=False)
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 1
+    assert called == []
+    out = json.loads(capsys.readouterr().out)
+    assert "error" in out
+
+
+def test_grant_revoke_all_proceeds_on_explicit_confirmation(monkeypatch, capsys):
+    monkeypatch.setattr(cli.grants, "revoke_all", lambda: [])
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    args = SimpleNamespace(grant_action="revoke-all", yes=False)
+
+    rc = cli.cmd_grant(args)
+
+    assert rc == 0

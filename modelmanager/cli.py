@@ -6,6 +6,7 @@ import os
 import re
 import ssl
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -904,6 +905,22 @@ def cmd_auth(args) -> int:
     return 0
 
 
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+_DURATION_RE = re.compile(r"^(\d+)([smhd]?)$")
+
+
+def _parse_duration_seconds(value: str) -> int:
+    """Accepts a bare number of seconds, or a number plus one of s/m/h/d
+    (e.g. "8h", "30m") - used by `grant allow --expires-in` so a one-night
+    "pool everything" grant can say what it means instead of computing
+    seconds by hand."""
+    match = _DURATION_RE.match(value.strip())
+    if not match:
+        raise ValueError(f"invalid duration {value!r} - use a number of seconds, or a number plus s/m/h/d (e.g. '8h')")
+    amount, unit = match.groups()
+    return int(amount) * _DURATION_UNITS.get(unit, 1)
+
+
 def cmd_grant(args) -> int:
     # Local-only, like cmd_auth: reads/writes grants.json directly, no
     # coordinator round-trip. This is User A's own admin action, run on
@@ -913,7 +930,12 @@ def cmd_grant(args) -> int:
     if args.grant_action == "list":
         entries = grants.load_grants()
         print(json.dumps([
-            {"name": g["name"], "allowed_systems": g["allowed_systems"], "created_at": g["created_at"]}
+            {
+                "name": g["name"],
+                "allowed_systems": g["allowed_systems"],
+                "system_expirations": g.get("system_expirations", {}),
+                "created_at": g["created_at"],
+            }
             for g in entries
         ]))
         return 0
@@ -921,6 +943,20 @@ def cmd_grant(args) -> int:
         removed = grants.remove_grant(args.name)
         print(json.dumps({"name": args.name, "removed": removed}))
         return 0 if removed else 1
+    if args.grant_action == "revoke-all":
+        # Panic button: every grant's access goes to zero in one call,
+        # identities/tokens left intact - see grants.revoke_all's own
+        # comment on why that's the right default for "someone's box might
+        # be compromised, cut everyone off right now."
+        if not args.yes:
+            print("This revokes ALL system access for EVERY grant (identities and tokens are kept).", file=sys.stderr)
+            answer = input("Proceed? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                print(json.dumps({"error": "aborted, nothing changed"}))
+                return 1
+        entries = grants.revoke_all()
+        print(json.dumps([{"name": g["name"], "allowed_systems": g["allowed_systems"]} for g in entries]))
+        return 0
     if args.grant_action == "add":
         entry = grants.add_grant(args.name, args.token)
         print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"], "created_at": entry["created_at"]}))
@@ -940,13 +976,25 @@ def cmd_grant(args) -> int:
                 "error": f"unknown system {args.system!r} - known systems: {', '.join(sorted(registry.systems))}"
             }))
             return 1
-        entry = grants.allow_system(args.name, args.system)
+        expires_at = None
+        if args.expires_in is not None:
+            try:
+                seconds = _parse_duration_seconds(args.expires_in)
+            except ValueError as exc:
+                print(json.dumps({"error": str(exc)}))
+                return 1
+            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+        entry = grants.allow_system(args.name, args.system, expires_at=expires_at)
     else:
         entry = grants.revoke_system(args.name, args.system)
     if entry is None:
         print(json.dumps({"error": f"unknown grant {args.name!r} - run `modelmanager grant add` first"}))
         return 1
-    print(json.dumps({"name": entry["name"], "allowed_systems": entry["allowed_systems"]}))
+    print(json.dumps({
+        "name": entry["name"],
+        "allowed_systems": entry["allowed_systems"],
+        "system_expirations": entry.get("system_expirations", {}),
+    }))
     return 0
 
 
@@ -1368,9 +1416,14 @@ def grant_remove(ctx, name):
 @grant_group.command("allow", help="give an existing grant access to one more system")
 @click.argument("name")
 @click.argument("system")
+@click.option(
+    "--expires-in", default=None,
+    help="make this system's access temporary - a number of seconds, or a number plus s/m/h/d "
+         "(e.g. '8h') - omit for standing access that lasts until explicitly revoked",
+)
 @click.pass_context
-def grant_allow(ctx, name, system):
-    _run(ctx, cmd_grant, grant_action="allow", name=name, system=system)
+def grant_allow(ctx, name, system, expires_in):
+    _run(ctx, cmd_grant, grant_action="allow", name=name, system=system, expires_in=expires_in)
 
 
 @grant_group.command("revoke", help="take away an existing grant's access to one system")
@@ -1379,6 +1432,17 @@ def grant_allow(ctx, name, system):
 @click.pass_context
 def grant_revoke(ctx, name, system):
     _run(ctx, cmd_grant, grant_action="revoke", name=name, system=system)
+
+
+@grant_group.command(
+    "revoke-all",
+    help="panic button: zero out every grant's system access at once (identities/tokens are kept) - "
+         "for when you need to cut everyone off right now and sort out who gets what back later",
+)
+@click.option("--yes", is_flag=True, help="skip the interactive confirmation")
+@click.pass_context
+def grant_revoke_all(ctx, yes):
+    _run(ctx, cmd_grant, grant_action="revoke-all", yes=yes)
 
 
 @cli.group(

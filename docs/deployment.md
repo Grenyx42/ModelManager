@@ -195,6 +195,30 @@ registry resources. `grant allow`/`revoke` aren't deletes in that sense -
 they mutate an existing grant's `allowed_systems` list in place, same as any
 other field update.
 
+**Temporary access, for "everyone pools their GPUs tonight":** `grant allow`
+takes an optional `--expires-in` - a number of seconds, or a number plus
+s/m/h/d (`30m`, `8h`, `2d`) - so a wide, one-off grant doesn't quietly
+outlive the night it was meant for:
+
+```bash
+modelmanager grant allow bob systemA --expires-in 8h   # tonight only
+modelmanager grant allow bob systemB                   # standing access, as before
+```
+
+Checked fresh on every request, same as `allowed_systems` itself - nothing
+to clean up afterward, and re-running `grant allow` for a system that's
+already allowed replaces (or, with no `--expires-in`, clears) its expiry
+rather than stacking. `grant list` shows current expirations alongside
+`allowed_systems`.
+
+**If you think someone's box might be compromised** (lost, stolen, acting
+strange) and need to cut access off *immediately*, without first working out
+exactly who was granted what: `modelmanager grant revoke-all` zeroes every
+grant's system access in one call (asks for confirmation unless you pass
+`--yes`). Unlike `grant remove`, it keeps each identity and token on file -
+once things are sorted out, getting back to where you were is just
+`grant allow` calls again, not re-exchanging tokens from scratch.
+
 ## Using `modelmanager` from another machine
 
 The CLI defaults to `https://127.0.0.1:8778` - i.e. "the coordinator is on
