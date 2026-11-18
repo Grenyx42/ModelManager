@@ -1,0 +1,46 @@
+{
+  "systems": {
+    "sleek": { "os": "linux", "control": "local" },
+    "vault": { "os": "linux", "control": "local" }
+  },
+  "gpu_groups": {
+    "gpu-sleek": { "system": "sleek" },
+    "gpu-vault": { "system": "vault" }
+  },
+  "engines": {
+    "eng-sleek": { "system": "sleek", "type": "process", "binary": "/bin/sleep" },
+    "eng-vault": { "system": "vault", "type": "process", "binary": "/bin/sleep" }
+  },
+  "models": {
+    "canary": {
+      "candidates": [
+        { "engine": "eng-sleek", "gpu_group": "gpu-sleek", "port": 18801, "args": ["300"] }
+      ]
+    },
+    "shared": {
+      "candidates": [
+        { "engine": "eng-vault", "gpu_group": "gpu-vault", "port": 18802, "args": ["300"] },
+        { "engine": "eng-sleek", "gpu_group": "gpu-sleek", "port": 18803, "args": ["300"] }
+      ]
+    },
+    "private-dep": {
+      "candidates": [
+        { "engine": "eng-vault", "gpu_group": "gpu-vault", "port": 18804, "args": ["300"] }
+      ]
+    },
+    "needs-dep": {
+      "depends_on": ["private-dep"],
+      "candidates": [
+        { "engine": "eng-sleek", "gpu_group": "gpu-sleek", "port": 18805, "args": ["300"] }
+      ]
+    },
+    "mismatched": {
+      "candidates": [
+        { "engine": "eng-sleek", "gpu_group": "gpu-vault", "port": 18806, "args": ["300"] }
+      ]
+    }
+  },
+  "groups": {
+    "mixed": ["shared", "private-dep"]
+  }
+}

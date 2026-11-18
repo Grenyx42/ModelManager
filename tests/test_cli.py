@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from click.testing import CliRunner
 
 from modelmanager import cli, known_hosts
 
@@ -396,6 +397,33 @@ def test_hosts_add_flags_and_explains_a_regenerated_token(monkeypatch, capsys):
     assert out["token"] == "new-token-value"
     assert out["token_regenerated"] is True
     assert "note" in out
+
+
+# --- grant add: token must never be a CLI argument -----------------------
+#
+# A positional argument sits in the process's command line for the whole
+# invocation - readable by anyone else on the box via `ps`/`/proc`. The
+# token has to come in some other way.
+
+def test_grant_add_prompts_for_token_when_omitted(monkeypatch):
+    captured = []
+    monkeypatch.setattr(cli, "cmd_grant", lambda ns: captured.append(ns.token) or 0)
+
+    result = CliRunner().invoke(cli.cli, ["grant", "add", "bob"], input="shared-secret-token\n")
+
+    assert result.exit_code == 0
+    assert captured == ["shared-secret-token"]
+    assert "shared-secret-token" not in result.output
+
+
+def test_grant_add_rejects_token_as_a_positional_argument(monkeypatch):
+    captured = []
+    monkeypatch.setattr(cli, "cmd_grant", lambda ns: captured.append(ns.token) or 0)
+
+    result = CliRunner().invoke(cli.cli, ["grant", "add", "bob", "shared-secret-token"])
+
+    assert result.exit_code != 0
+    assert captured == []
 
 
 # --- hosts rotate-token --------------------------------------------------

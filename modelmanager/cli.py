@@ -1394,9 +1394,15 @@ def grant_group():
 
 @grant_group.command("add", help="register (or re-register) a token someone shared with you under a name - no system access yet")
 @click.argument("name")
-@click.argument("token")
 @click.pass_context
-def grant_add(ctx, name, token):
+def grant_add(ctx, name):
+    # Deliberately no `token` argument: anything passed on the command line
+    # sits in the process's argv for the whole invocation, readable by
+    # anyone else on the box via `ps`/`/proc` while it runs. Prompting
+    # (hidden, like a password) keeps it out of argv entirely - still
+    # scriptable by piping the token in on stdin, same as
+    # `docker login --password-stdin`.
+    token = click.prompt("Token", hide_input=True)
     _run(ctx, cmd_grant, grant_action="add", name=name, token=token)
 
 

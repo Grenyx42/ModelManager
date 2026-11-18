@@ -1,0 +1,84 @@
+You are doing adversarial security testing against a REAL, LIVE, disposable
+instance of the ModelManager coordinator (a FastAPI service for managing
+GPU model-serving processes across machines). This is tier 5 of this
+project's smoke-test suite: unlike the rest of the suite, you are not
+checking a known behavior - you are actively trying to find ANY unexpected
+behavior, authorization bypass, crash, or information leak, by actually
+calling the live API and CLI, not by reading source code.
+
+THE SANDBOX (fully disposable - this instance exists only for this test and
+is torn down afterward, so there is nothing to protect by being gentle with
+it; break it as hard as you want):
+<<BRIEFING_JSON>>
+
+Two credentials are available:
+- The OWNER token: full, unrestricted access to everything.
+- The "fuzzpeer" grant token: scoped to allowed_systems=["sleek"] only. It
+  should never be able to see, start, stop, or learn about anything tied to
+  "vault" (directly, or through log_location paths, group membership,
+  dependency names, error messages, GET /v1/config content, or any other
+  field), and it should never be able to act as the owner (write config,
+  see /v1/doctor, read the access/lifecycle logs, rotate anything).
+
+HOW TO TALK TO IT: the `modelmanager` CLI is at the path given in the
+briefing's `venv_mm`. Before using it, `export XDG_CONFIG_HOME=<xdg_config_home>`
+so it finds the right TLS cert for this sandbox. Pass `--url <url> --token
+<token>` explicitly on every invocation (don't rely on it picking up the
+right token by itself). You can also hit the API directly with
+`curl --cacert <cert_path> -H "Authorization: Bearer <token>" <url><path>`
+for anything the CLI doesn't expose directly, or to send malformed/unusual
+requests the CLI wouldn't construct on its own (bad JSON, wrong content
+types, unusual query params, concurrent requests, oversized input, etc.).
+
+YOUR SCOPE - read this carefully, it is a hard boundary:
+- Only ever touch the URL given in the briefing. Never run `systemctl`,
+  never touch `~/.config/modelmanager` (the REAL one, not this sandbox's),
+  never touch anything outside the sandbox's own `work_dir`, never run `git
+  push`, never modify files in the actual ModelManager repo checkout.
+- This sandbox's coordinator process and the two processes started inside
+  it (if you ensure() a model) are real, if harmless (each just runs
+  `/bin/sleep 300`) - you can freely ensure/stop/acquire/release them, kill
+  the coordinator process itself, or do anything else that only affects
+  this one disposable sandbox.
+- Do not attempt anything against real external services, networks, or
+  hosts other than 127.0.0.1 at the given port.
+
+WHAT TO TRY (not exhaustive - use your own judgment, this is the point):
+- Can the fuzzpeer grant see or touch anything tied to "vault", "private-dep",
+  "needs-dep" (which depends on a vault-only model), "mismatched" (whose
+  gpu_group is on vault even though its engine is on sleek), or the "mixed"
+  group (which has a vault-only member)? Try every route, not just the
+  obvious ones - GET /v1/config, /v1/groups, /v1/groups/{name}/stats,
+  log-path, dry-run, group actions.
+- Malformed/unusual input: bad JSON bodies, wrong types for query params,
+  extremely long strings, path traversal attempts in a model/system/group
+  name, null bytes, unicode tricks, SQL/shell-metacharacter-looking strings
+  even though you don't expect SQL/shell injection here specifically -
+  confirm it, don't assume.
+- Auth edge cases: no Authorization header, malformed header, a
+  token with wrong case/whitespace, the grant token used in place of the
+  owner token's expected context or vice versa, concurrent requests with
+  the same token.
+- Logic/state edge cases: rapid repeated ensure()/stop() on the same model,
+  acquiring a lease then letting a different credential try to release it,
+  calling revoke-all then immediately retrying with the old token, an
+  ambiguous substring name, requesting a group that doesn't exist, a model
+  name that's valid JSON but not a string.
+- Anything else you think of. You have full tool access (Bash, curl,
+  the modelmanager CLI) - genuinely try to break it.
+
+REPORTING - this is the part that matters most:
+- Only report something as a finding if you have ACTUALLY REPRODUCED it
+  with a real command/request and observed the actual response - not "this
+  looks like it might be a problem." Include the exact command and the
+  exact output for every finding.
+- If you're not sure something is actually wrong (e.g. a 403 that doesn't
+  leak anything, or an error message that's just unhelpful but not a
+  security/correctness problem), don't report it as a finding.
+- Write your findings to `findings.json` in your current directory as a
+  JSON array (empty array if you found nothing): each entry needs
+  `title`, `severity` (high/medium/low), `reproduction` (exact
+  command(s)), `observed_output`, and `why_this_is_wrong`.
+- End your final message with a one-line summary: either
+  "NO FINDINGS - tried: <brief list of what you attempted>" or
+  "N FINDINGS - see findings.json".

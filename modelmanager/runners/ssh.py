@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -21,8 +22,12 @@ class SSHRunner(Runner):
         self.host_alias = host_alias
 
     def run(self, cmd: list[str], timeout: float | None = 30) -> CommandResult:
-        # Join into a single remote command string; SSH always execs via the remote shell.
-        remote_cmd = subprocess.list2cmdline(cmd)
+        # Join into a single remote command string; SSH always execs via the
+        # remote shell. shlex.join (POSIX quoting), not subprocess.list2cmdline
+        # (Windows cmd.exe quoting) - the remote side is never cmd.exe, and
+        # list2cmdline's escaping is wrong for a POSIX shell (e.g. it doesn't
+        # even quote $, `, or ' the way a shell needs).
+        remote_cmd = shlex.join(cmd)
         return self.run_shell(remote_cmd, timeout=timeout)
 
     def run_shell(self, cmd: str, timeout: float | None = 30) -> CommandResult:

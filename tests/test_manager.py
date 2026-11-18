@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,8 @@ import pytest
 
 from modelmanager.adapters.base import AdapterStatus, EngineAdapter
 from modelmanager.config import Candidate, EngineConfig, GpuGroupConfig, ModelDefinition, Registry, SystemConfig
-from modelmanager.coordinator.manager import AmbiguousNameError, ConflictError, Manager, NotFoundError
+from modelmanager.coordinator.manager import AmbiguousNameError, ConflictError, GpuGroupBusyError, Manager, NotFoundError
+from modelmanager.errors import ForbiddenError
 from modelmanager.coordinator.state import StateStore
 
 
@@ -131,35 +133,54 @@ def test_resolve_name_no_match_raises_not_found():
         manager.resolve_name("does-not-exist")
 
 
-def test_model_systems_returns_the_single_system_for_a_simple_model():
+# --- resolve_name: allowed_models scoping (cross-scope name disclosure) ---
+#
+# routes._require_reachable deliberately never echoes a resource's real
+# system name back to a scoped grant, specifically to stop a grant mapping
+# model-name -> system for things it has no access to. An ambiguous-substring
+# match that lists every matching model name - regardless of scope - is the
+# same leak through a different door, since "model-b" and "model-z" below
+# might sit on a system this grant was never given.
+
+def test_resolve_name_ambiguous_substring_is_filtered_to_allowed_models():
     manager, _ = make_manager()
 
-    assert manager.model_systems("nomic-embed") == {"sleek"}
+    # Without scoping, "model-" is ambiguous between model-b and model-z.
+    # Scoped to only model-b, it must resolve cleanly instead of raising -
+    # and must never mention model-z anywhere.
+    assert manager.resolve_name("model-", allowed_models={"model-b"}) == "model-b"
 
 
-def test_model_systems_unions_across_every_candidate():
-    registry = Registry(
-        systems={
-            "sys-a": SystemConfig(os="linux", control="local"),
-            "sys-b": SystemConfig(os="linux", control="local"),
-        },
-        gpu_groups={"gpu-a": GpuGroupConfig(system="sys-a"), "gpu-b": GpuGroupConfig(system="sys-b")},
-        engines={
-            "eng-a": EngineConfig(system="sys-a", type="llama.cpp", binary="/bin/true"),
-            "eng-b": EngineConfig(system="sys-b", type="llama.cpp", binary="/bin/true"),
-        },
-        models={
-            "split-model": ModelDefinition(
-                candidates=[
-                    Candidate(engine="eng-a", gpu_group="gpu-a", port=1, model_path="/m/a.gguf"),
-                    Candidate(engine="eng-b", gpu_group="gpu-b", port=2, model_path="/m/b.gguf"),
-                ],
-            ),
-        },
-    )
-    manager = Manager(registry, StateStore())
+def test_resolve_name_ambiguous_substring_outside_scope_is_not_found_not_leaked():
+    manager, _ = make_manager()
 
-    assert manager.model_systems("split-model") == {"sys-a", "sys-b"}
+    # Scoped to a model that doesn't match "model-" at all: no in-scope
+    # candidates survive the filter, so this must look identical to "no
+    # match" - never an AmbiguousNameError naming model-b/model-z.
+    with pytest.raises(NotFoundError):
+        manager.resolve_name("model-", allowed_models={"nomic-embed"})
+
+
+def test_resolve_name_ambiguous_substring_still_ambiguous_within_scope():
+    manager, _ = make_manager()
+
+    # Both candidates in scope: still ambiguous, but the match list must be
+    # limited to what's in scope (trivially true here since scope == both
+    # candidates, but exercises that filtering doesn't suppress real
+    # ambiguity between two in-scope models).
+    with pytest.raises(AmbiguousNameError, match="model-b.*model-z|model-z.*model-b"):
+        manager.resolve_name("model-", allowed_models={"model-b", "model-z"})
+
+
+def test_resolve_name_exact_match_ignores_allowed_models():
+    manager, _ = make_manager()
+
+    # Typing the full name you already know isn't a new disclosure - the
+    # caller gets the same 404 "unknown model" from _require_reachable
+    # right after, not a leaked list. Exact match must stay unaffected by
+    # scoping.
+    assert manager.resolve_name("model-z", allowed_models={"nomic-embed"}) == "model-z"
+
 
 
 def test_ensure_accepts_a_unique_partial_name():
@@ -851,3 +872,505 @@ def test_validate_registry_reports_errors_without_touching_live_state():
 def test_validate_registry_accepts_a_valid_document():
     data = build_registry().model_dump(mode="json")
     assert Manager.validate_registry(data) == {"ok": True, "errors": []}
+
+
+# --- consistent_registry_read: must actually serialize against reloads ---
+
+def test_consistent_registry_read_blocks_while_write_lock_is_held():
+    # reload_from_disk()/_upsert() mutate the registry in place under
+    # _write_lock with no synchronization on the read side otherwise - a
+    # multi-step read (GET /v1/config) has to share that same lock or a
+    # reload landing mid-read could leave it looking at a mix of
+    # before/after state. Verify consistent_registry_read() actually waits
+    # for _write_lock, using Events rather than sleeps so this isn't timing-
+    # flaky.
+    manager, _ = make_manager()
+    writer_holds_lock = threading.Event()
+    release_writer = threading.Event()
+
+    def hold_write_lock():
+        with manager._write_lock:
+            writer_holds_lock.set()
+            release_writer.wait(timeout=5)
+
+    writer = threading.Thread(target=hold_write_lock)
+    writer.start()
+    assert writer_holds_lock.wait(timeout=5)
+
+    reader_entered = threading.Event()
+
+    def try_consistent_read():
+        with manager.consistent_registry_read():
+            reader_entered.set()
+
+    reader = threading.Thread(target=try_consistent_read)
+    reader.start()
+    try:
+        # The write lock is still held - the reader must not have gotten in.
+        assert not reader_entered.wait(timeout=0.2)
+    finally:
+        release_writer.set()
+        writer.join(timeout=5)
+    assert reader_entered.wait(timeout=5)
+    reader.join(timeout=5)
+
+
+def test_consistent_registry_read_releases_the_lock_even_if_the_block_raises():
+    # Standard context-manager semantics, but worth pinning explicitly: a
+    # future change inside a `with manager.consistent_registry_read():`
+    # block (e.g. get_config starts raising NotFoundError for something)
+    # must never leave _write_lock stuck held - that would hang every
+    # later reload/_upsert for the life of the process.
+    manager, _ = make_manager()
+
+    with pytest.raises(ValueError):
+        with manager.consistent_registry_read():
+            raise ValueError("boom")
+
+    acquired = manager._write_lock.acquire(timeout=1)
+    assert acquired, "lock was still held after the context manager exited via an exception"
+    manager._write_lock.release()
+
+
+# --- per-candidate scoping (allowed_systems) -------------------------------
+#
+# is_reachable()/resolve_name's allowed_models only proves *some* candidate
+# of a model is in scope (and its dependency chain is satisfiable). These
+# tests cover the narrower allowed_systems check Manager itself applies
+# after deciding which *specific* candidate an action/read would actually
+# touch - "shared" below has one candidate on vault (never granted) and one
+# on sleek (granted), and "needs-vault-dep" depends on a vault-only model.
+
+def build_scoped_registry() -> Registry:
+    return Registry(
+        systems={
+            "sleek": SystemConfig(os="linux", control="local"),
+            "vault": SystemConfig(os="linux", control="local"),
+        },
+        gpu_groups={
+            "gpu-sleek": GpuGroupConfig(system="sleek"),
+            "gpu-vault": GpuGroupConfig(system="vault"),
+        },
+        engines={
+            "eng-sleek": EngineConfig(system="sleek", type="llama.cpp", binary="/bin/true"),
+            "eng-vault": EngineConfig(system="vault", type="llama.cpp", binary="/bin/true"),
+        },
+        models={
+            # Candidate 0 (vault) comes first - _ensure_loaded/dry_run try
+            # candidates in order, so this is the one a pre-fix build would
+            # wrongly pick first.
+            "shared": ModelDefinition(
+                candidates=[
+                    Candidate(engine="eng-vault", gpu_group="gpu-vault", port=1, model_path="/m/shared-vault.gguf"),
+                    Candidate(engine="eng-sleek", gpu_group="gpu-sleek", port=2, model_path="/m/shared-sleek.gguf"),
+                ],
+            ),
+            "dep-on-vault": ModelDefinition(
+                candidates=[Candidate(engine="eng-vault", gpu_group="gpu-vault", port=3, model_path="/m/dep.gguf")],
+            ),
+            "needs-vault-dep": ModelDefinition(
+                depends_on=["dep-on-vault"],
+                candidates=[Candidate(engine="eng-sleek", gpu_group="gpu-sleek", port=4, model_path="/m/needs.gguf")],
+            ),
+            # Engine on sleek (granted) but gpu_group on vault (not granted) -
+            # nothing in the schema requires these to agree, so this is a
+            # legal (if unusual) registry. A per-candidate check that only
+            # looks at the engine's system would wrongly treat this as
+            # in-scope for a grant that only has sleek.
+            "mismatched": ModelDefinition(
+                candidates=[Candidate(engine="eng-sleek", gpu_group="gpu-vault", port=5, model_path="/m/mismatched.gguf")],
+            ),
+            # The mirror image of "mismatched" - engine on vault, gpu_group
+            # on sleek - so it can occupy gpu-sleek (a gpu_group bob's own
+            # requests are fully allowed to use) while its own candidate is
+            # actually unauthorized for bob.
+            "occupant-mismatched": ModelDefinition(
+                candidates=[Candidate(engine="eng-vault", gpu_group="gpu-sleek", port=6, model_path="/m/occupant.gguf")],
+            ),
+            "wants-sleek-gpu": ModelDefinition(
+                candidates=[Candidate(engine="eng-sleek", gpu_group="gpu-sleek", port=7, model_path="/m/wants.gguf")],
+            ),
+            # Its own candidate is fully on sleek (both engine and
+            # gpu_group), but it depends on a vault-only model - so it's
+            # unreachable for a grant scoped to sleek alone (is_reachable
+            # fails on the dependency), even though _candidate_allowed on
+            # its own candidate would say yes.
+            "hidden-occupant": ModelDefinition(
+                pinned=True,
+                depends_on=["dep-on-vault"],
+                candidates=[Candidate(engine="eng-sleek", gpu_group="gpu-sleek", port=8, model_path="/m/hidden.gguf")],
+            ),
+        },
+        groups={"mixed": ["shared", "dep-on-vault"]},
+    )
+
+
+def make_scoped_manager():
+    registry = build_scoped_registry()
+    manager = Manager(registry, StateStore())
+    fake_adapter = FakeAdapter()
+    manager.adapters = FakeAdapterRegistry(fake_adapter)
+    return manager, fake_adapter
+
+
+def test_ensure_skips_an_unauthorized_candidate_in_favor_of_an_allowed_one():
+    manager, adapter = make_scoped_manager()
+
+    result = manager.ensure("shared", allowed_systems={"sleek"})
+
+    assert result.port == 2  # the sleek candidate, not vault's port 1
+    assert adapter.start_calls == ["shared"]
+
+
+def test_ensure_raises_forbidden_when_no_candidate_is_in_scope():
+    manager, adapter = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.ensure("shared", allowed_systems={"some-other-system"})
+
+    assert adapter.start_calls == []
+
+
+def test_ensure_raises_forbidden_for_an_already_active_out_of_scope_candidate():
+    manager, adapter = make_scoped_manager()
+    manager.ensure("shared")  # unrestricted (owner) - picks vault, candidate 0
+
+    with pytest.raises(ForbiddenError):
+        manager.ensure("shared", allowed_systems={"sleek"})
+
+
+def test_ensure_dependency_outside_scope_raises_forbidden_and_starts_nothing():
+    manager, adapter = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.ensure("needs-vault-dep", allowed_systems={"sleek"})
+
+    # Fails closed before starting anything - not a partial start of the
+    # top-level model while silently skipping its dependency.
+    assert adapter.start_calls == []
+
+
+def test_ensure_dependency_within_scope_succeeds():
+    manager, adapter = make_scoped_manager()
+
+    result = manager.ensure("needs-vault-dep", allowed_systems={"sleek", "vault"})
+
+    assert result.port == 4
+    assert adapter.start_calls == ["dep-on-vault", "needs-vault-dep"]
+
+
+# --- is_reachable: visibility/actionability follows the dependency chain -
+
+def test_is_reachable_true_for_unrestricted_owner():
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("needs-vault-dep", None) is True
+
+
+def test_is_reachable_false_when_a_dependency_has_no_in_scope_candidate():
+    # needs-vault-dep's own candidate is on sleek, but it depends on
+    # dep-on-vault, which is vault-only - it can never actually be ensured
+    # for a grant scoped to sleek alone, so it must not be "reachable".
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("needs-vault-dep", {"sleek"}) is False
+
+
+def test_is_reachable_true_when_the_whole_dependency_chain_is_in_scope():
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("needs-vault-dep", {"sleek", "vault"}) is True
+
+
+def test_is_reachable_false_for_a_model_with_no_in_scope_candidate_of_its_own():
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("dep-on-vault", {"sleek"}) is False
+
+
+def test_is_reachable_false_for_mismatched_engine_and_gpu_group_systems():
+    # "mismatched" has engine on sleek, gpu_group on vault - no single
+    # system covers both, so its one candidate is never actually usable.
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("mismatched", {"sleek"}) is False
+    assert manager.is_reachable("mismatched", {"sleek", "vault"}) is True
+
+
+def test_is_reachable_false_for_an_unknown_model():
+    manager, _ = make_scoped_manager()
+    assert manager.is_reachable("does-not-exist", {"sleek"}) is False
+
+
+def test_stop_raises_forbidden_for_out_of_scope_active_candidate_and_does_not_stop_it():
+    manager, adapter = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    with pytest.raises(ForbiddenError):
+        manager.stop("shared", allowed_systems={"sleek"})
+
+    assert adapter.stop_calls == []
+
+
+def test_logs_raises_forbidden_for_out_of_scope_active_candidate():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    with pytest.raises(ForbiddenError):
+        manager.logs("shared", allowed_systems={"sleek"})
+
+
+def test_log_location_raises_forbidden_for_out_of_scope_active_candidate():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    with pytest.raises(ForbiddenError):
+        manager.log_location("shared", allowed_systems={"sleek"})
+
+
+def test_logs_prefers_an_allowed_candidate_over_a_hardcoded_zero_when_inactive():
+    # "shared" is never ensured here - inactive. Candidate 0 is on vault
+    # (not allowed), candidate 1 is on sleek (allowed). A grant scoped to
+    # sleek must not get a false 403 just because candidate 0 happens to
+    # come first in the list.
+    manager, _ = make_scoped_manager()
+
+    manager.logs("shared", allowed_systems={"sleek"})  # must not raise
+
+
+def test_log_location_prefers_an_allowed_candidate_over_a_hardcoded_zero_when_inactive():
+    manager, _ = make_scoped_manager()
+
+    result = manager.log_location("shared", allowed_systems={"sleek"})  # must not raise
+
+    assert result["system"] == "sleek"
+
+
+def test_logs_still_fails_closed_when_inactive_and_no_candidate_is_allowed():
+    manager, _ = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.logs("shared", allowed_systems={"some-other-system"})
+
+
+def test_dry_run_raises_forbidden_when_no_candidate_is_in_scope():
+    manager, _ = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.dry_run("shared", allowed_systems={"some-other-system"})
+
+
+def test_dry_run_dependency_outside_scope_raises_forbidden():
+    manager, _ = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.dry_run("needs-vault-dep", allowed_systems={"sleek"})
+
+
+def test_dry_run_picks_the_allowed_candidate_when_scoped():
+    manager, _ = make_scoped_manager()
+
+    result = manager.dry_run("shared", allowed_systems={"sleek"})
+
+    assert result["port"] == 2
+    assert result["action"] == "start"
+
+
+def test_status_masks_out_of_scope_active_candidate():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    entry = manager.status("shared", allowed_systems={"sleek"})
+
+    assert entry["active"] is False
+    assert entry["candidate"] is None
+
+
+def test_status_shows_active_candidate_when_it_is_in_scope():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    entry = manager.status("shared", allowed_systems={"vault"})
+
+    assert entry["active"] is True
+    assert entry["candidate"]["port"] == 1
+
+
+def test_status_gpu_groups_are_filtered_to_allowed_systems():
+    manager, _ = make_scoped_manager()
+
+    entry = manager.status("shared", allowed_systems={"sleek"})
+
+    assert entry["gpu_groups"] == ["gpu-sleek"]
+
+
+def test_list_models_masks_out_of_scope_active_candidates():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    entries = {e["name"]: e for e in manager.list_models(allowed_systems={"sleek"})}
+
+    assert entries["shared"]["active"] is False
+    assert entries["shared"]["candidate"] is None
+
+
+def test_group_ensure_reports_per_member_forbidden_for_out_of_scope_candidate():
+    manager, adapter = make_scoped_manager()
+    manager.ensure("shared")  # active on vault, before any grant is involved
+
+    # "shared" passes the broader allowed_models test (it has a sleek
+    # candidate), but its *active* candidate is on vault - the group call
+    # must report that member as a failure, not silently succeed against
+    # an unauthorized system.
+    result = manager.ensure_group("mixed", allowed_models={"shared"}, allowed_systems={"sleek"})
+
+    by_name = {r["name"]: r for r in result["results"]}
+    assert by_name["shared"]["ok"] is False
+
+
+def test_group_system_models_drops_a_member_whose_active_candidate_is_out_of_scope():
+    manager, _ = make_scoped_manager()
+    manager.ensure("shared")  # active on vault
+
+    result = manager.group_system_models("mixed", allowed_models={"shared"}, allowed_systems={"sleek"})
+
+    assert "vault" not in result
+    assert all("shared" not in models for models in result.values())
+
+
+def test_release_raises_forbidden_for_out_of_scope_active_candidate():
+    # Every sibling action (ensure/stop/logs/verify) re-checks the model's
+    # actual active candidate against allowed_systems - release() must too,
+    # or a grant outside a model's real system can still clear someone
+    # else's lease on it (defeating the "an active lease blocks eviction"
+    # guarantee for a system this grant has no business touching).
+    manager, _ = make_scoped_manager()
+    manager.acquire("shared")  # active on vault, with a lease held
+
+    with pytest.raises(ForbiddenError):
+        manager.release("shared", allowed_systems={"sleek"})
+
+    # Not released - the lease must still be there afterward.
+    assert manager.state.get("shared").leases
+
+
+def test_release_succeeds_when_active_candidate_is_in_scope():
+    manager, _ = make_scoped_manager()
+    manager.acquire("shared")  # active on vault
+
+    result = manager.release("shared", allowed_systems={"vault"})
+
+    assert result["released"] == 1
+
+
+def test_release_of_an_inactive_model_is_unaffected_by_allowed_systems():
+    # Nothing to protect when the model isn't running anywhere - this must
+    # stay a no-op, not a spurious ForbiddenError.
+    manager, _ = make_scoped_manager()
+
+    result = manager.release("shared", allowed_systems={"some-other-system"})
+
+    assert result == {"released": 0, "remaining_leases": 0}
+
+
+# --- a candidate's engine and gpu_group can legally name different systems -
+
+def test_candidate_allowed_requires_both_engine_and_gpu_group_system_in_scope():
+    manager, _ = make_scoped_manager()
+    definition = manager.registry.models["mismatched"]
+    candidate = definition.candidates[0]  # engine on sleek, gpu_group on vault
+
+    assert manager._candidate_allowed(candidate, {"sleek"}) is False
+    assert manager._candidate_allowed(candidate, {"vault"}) is False
+    assert manager._candidate_allowed(candidate, {"sleek", "vault"}) is True
+
+
+def test_ensure_rejects_a_candidate_whose_gpu_group_system_is_out_of_scope():
+    manager, adapter = make_scoped_manager()
+
+    with pytest.raises(ForbiddenError):
+        manager.ensure("mismatched", allowed_systems={"sleek"})
+
+    assert adapter.start_calls == []
+
+
+def test_ensure_succeeds_when_both_the_candidates_systems_are_allowed():
+    manager, adapter = make_scoped_manager()
+
+    result = manager.ensure("mismatched", allowed_systems={"sleek", "vault"})
+
+    assert result.port == 5
+    assert adapter.start_calls == ["mismatched"]
+
+
+# --- eviction must not touch/reveal an occupant outside allowed_systems ---
+
+def test_ensure_refuses_to_evict_an_occupant_whose_candidate_is_out_of_scope():
+    manager, adapter = make_scoped_manager()
+    manager.ensure("occupant-mismatched")  # owner - occupies gpu-sleek via eng-vault
+
+    with pytest.raises(GpuGroupBusyError) as exc_info:
+        manager.ensure("wants-sleek-gpu", allowed_systems={"sleek"})
+
+    # Never actually stopped the unauthorized occupant, and never named it.
+    assert "occupant-mismatched" not in adapter.stop_calls
+    assert "occupant-mismatched" not in str(exc_info.value)
+
+
+def test_dry_run_does_not_reveal_an_occupant_whose_candidate_is_out_of_scope():
+    manager, _ = make_scoped_manager()
+    manager.ensure("occupant-mismatched")  # owner - occupies gpu-sleek via eng-vault
+
+    result = manager.dry_run("wants-sleek-gpu", allowed_systems={"sleek"})
+
+    assert result["action"] == "blocked"
+    assert result["evicts"] is None
+    assert "occupant-mismatched" not in json.dumps(result, default=str)
+
+
+def test_ensure_does_not_name_an_unreachable_occupant_even_with_an_in_scope_candidate():
+    # "hidden-occupant"'s own candidate is fully on sleek - _candidate_allowed
+    # alone would say it's fine to name. But it depends on a vault-only
+    # model, so it's not is_reachable() for a grant scoped to sleek - the
+    # same model GET /v1/models would hide entirely must not leak its name
+    # through a gpu_group-contention message either.
+    manager, adapter = make_scoped_manager()
+    manager.ensure("hidden-occupant")  # owner - pinned, occupies gpu-sleek
+
+    with pytest.raises(GpuGroupBusyError) as exc_info:
+        manager.ensure("wants-sleek-gpu", allowed_systems={"sleek"})
+
+    assert "hidden-occupant" not in str(exc_info.value)
+    assert "wants-sleek-gpu" not in adapter.start_calls
+
+
+def test_dry_run_does_not_name_an_unreachable_occupant_even_with_an_in_scope_candidate():
+    manager, _ = make_scoped_manager()
+    manager.ensure("hidden-occupant")  # owner - pinned, occupies gpu-sleek
+
+    result = manager.dry_run("wants-sleek-gpu", allowed_systems={"sleek"})
+
+    assert result["action"] == "blocked"
+    assert "hidden-occupant" not in json.dumps(result, default=str)
+
+
+# --- status() masks in_use/lease_count/last_used/idle_seconds too ---------
+
+def test_status_masks_busy_state_for_a_hidden_active_candidate():
+    manager, _ = make_scoped_manager()
+    manager.acquire("shared")  # active on vault, with a lease held
+
+    entry = manager.status("shared", allowed_systems={"sleek"})
+
+    assert entry["active"] is False
+    assert entry["in_use"] is False
+    assert entry["lease_count"] == 0
+    assert entry["last_used"] is None
+    assert entry["idle_seconds"] is None
+
+
+def test_status_shows_real_busy_state_when_active_candidate_is_in_scope():
+    manager, _ = make_scoped_manager()
+    manager.acquire("shared")  # active on vault
+
+    entry = manager.status("shared", allowed_systems={"vault"})
+
+    assert entry["active"] is True
+    assert entry["in_use"] is True
+    assert entry["lease_count"] == 1
+    assert entry["last_used"] is not None

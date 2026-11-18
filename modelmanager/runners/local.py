@@ -81,7 +81,13 @@ class LocalRunner(Runner):
         if proc is not None:
             if proc.poll() is None:
                 return True
-            del self._children[pid]
+            # pop, not del: a concurrent stop() on the same pid (e.g. two
+            # overlapping force-stop requests for the same model) can
+            # remove this key between the .get() above and here - found by
+            # the adversarial smoke tier firing concurrent stops and
+            # getting a raw 500 (KeyError) back instead of this just being
+            # a no-op either way.
+            self._children.pop(pid, None)
             return False
         try:
             os.kill(pid, 0)
@@ -102,7 +108,10 @@ class LocalRunner(Runner):
         if proc is not None:
             try:
                 proc.wait(timeout=timeout)
-                del self._children[pid]
+                # pop, not del - see is_running()'s identical comment;
+                # another concurrent stop() on this same pid may have
+                # already removed it.
+                self._children.pop(pid, None)
                 return
             except subprocess.TimeoutExpired:
                 pass

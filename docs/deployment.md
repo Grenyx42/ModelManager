@@ -156,7 +156,13 @@ separately grants or revokes access to individual systems from your
 retyping the token:
 
 ```bash
-modelmanager grant add bob <the-token-bob-shared-with-you>   # no system access yet
+modelmanager grant add bob     # prompts for the token bob shared with you (hidden, like a password) -
+                                # no system access yet. There's no way to pass the token as a
+                                # command-line argument - that would put it in `ps`/`/proc` for
+                                # anyone else on the box to read for as long as the command runs.
+                                # Piping it in (echo "$TOKEN" | modelmanager grant add bob) answers
+                                # the prompt without echoing, the same way `docker login
+                                # --password-stdin` does.
 modelmanager grant allow bob systemB
 modelmanager grant allow bob systemC
 modelmanager grant revoke bob systemB     # bob keeps systemC
@@ -176,9 +182,17 @@ can never write registry config, and never sees `doctor`,
 `/v1/config/validate`, or the access/lifecycle logs - those stay owner-only
 regardless of `allowed_systems`. Access is per-*system*, not per-model: if a
 model has candidates split across more than one system, a grant covering any
-one of them can reach the whole model (see `Manager.model_systems` for why) -
-keep candidates for a shared model on one system if you need tighter
-isolation than that. A `registry.json` **group** only shows up for a grant
+one of them is enough for that model to show up at all - but every action
+(`ensure`/`stop`/`logs`/`verify`/...) only ever touches whichever candidate
+is actually in scope, never a different one on a system the grant was never
+given, even though the model itself is visible. The same rule covers
+`depends_on`: a model is only ever shown or actionable for a grant if every
+dependency it needs, transitively, has its own in-scope candidate too - one
+that can never actually start for this grant because a dependency sits
+entirely on a private system is treated as not in scope at all, the same as
+a model with no in-scope candidate of its own. Keep candidates for a shared
+model on one system if you want all-or-nothing access to it instead of this
+finer split. A `registry.json` **group** only shows up for a grant
 at all (`GET /v1/groups`, a single group by name, or the `groups` section of
 `GET /v1/config`) if *every* member model is within its allowed systems - a
 group mixing permitted and non-permitted models is hidden outright rather
@@ -285,7 +299,9 @@ interception) is caught instead of silently trusted.
 `hosts add` also generates a fresh **per-peer token** the first time you
 trust a given name, and prints it right alongside the fingerprint - give
 that value (not your owner token from `auth show`) to alice so she can run
-`grant add you <that-token>` on her end. Re-running `hosts add alice <url>`
+`grant add you` on her end (it'll prompt for the token - see "Sharing access
+with another person" above for why that's not a command-line argument).
+Re-running `hosts add alice <url>`
 later preserves that token as long as the fingerprint is unchanged (the
 fingerprint, not the name, is what the token is actually bound to) - but if
 the fingerprint *is* different from what this name was last trusted as,

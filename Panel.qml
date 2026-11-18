@@ -217,6 +217,18 @@ Panel {
     root.lastError = ""
     root.actionError = ""
     root.systemStats = ({})
+    // Also the actual model list/groups/system names, not just the error
+    // state above - without this, the previous host's rows (names, host,
+    // port, pinned/active state) stay on screen and stay actionable (the
+    // Ensure/Stop buttons in ModelsList.qml build their command against
+    // whatever root.activeHost is *now*) until the new host's own first
+    // poll lands, which can read as "stop this peer's model" while
+    // actually hitting a same-named model on a completely different one.
+    root.models = []
+    root.groupedModels = []
+    root.runningCount = 0
+    root.systemNames = []
+    root.groups = []
     // Any of these still in flight belong to the host being left - their
     // pendingHost guards (see each Process's own comment) already stop a
     // late result from clobbering state for whatever's active now, but
@@ -1088,6 +1100,22 @@ Panel {
       // before being treated as one.
       if (data && typeof data === "object" && !Array.isArray(data) && data.error) {
         lastError = data.error
+        // data.code only exists for an error the *backend* actually
+        // produced (see coordinator/app.py's auth middleware and
+        // install_error_handler) - a plain connectivity failure is
+        // synthesized client-side by cli.py and never carries one. Those
+        // three codes specifically mean the active token/host can no
+        // longer be trusted to describe what's on screen (revoked,
+        // expired, or never configured) - unlike a transient "can't reach
+        // it right now", where leaving the last-known list showing until
+        // the next successful poll is the better default. Clearing it
+        // here, not just lastError, matters because those rows stay
+        // actionable (Ensure/Stop) against whatever host is now active.
+        if (data.code === "UNAUTHORIZED" || data.code === "FORBIDDEN" || data.code === "AUTH_NOT_CONFIGURED") {
+          models = []
+          groupedModels = []
+          runningCount = 0
+        }
         root.checkFreshInstall()
         root.checkSetupAlreadyDone()
         root.checkDiagnosisInfo()

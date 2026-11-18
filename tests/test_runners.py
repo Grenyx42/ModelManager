@@ -1,10 +1,12 @@
 import os
+import shlex
 import subprocess
 import time
 
 import pytest
 
 from modelmanager.errors import CommandTimeoutError, HostUnreachableError
+from modelmanager.runners.base import CommandResult
 from modelmanager.runners.local import LocalRunner
 from modelmanager.runners.ssh import SSHRunner
 
@@ -75,6 +77,28 @@ def test_ssh_run_tolerates_non_utf8_output():
     assert result.stdout == "ok � café done"
 
 
+def test_ssh_run_quotes_argv_for_a_posix_remote_shell_not_windows(monkeypatch):
+    # run()'s list form has to become a single string SSH hands to the
+    # remote shell - that shell is never cmd.exe, so the joining has to use
+    # POSIX quoting (shlex.join), not subprocess.list2cmdline's Windows
+    # escaping, which doesn't even quote $, `, or ' the way a POSIX shell
+    # needs - an argument containing one of those would be silently
+    # mis-executed on the remote end instead of passed through literally.
+    captured = {}
+
+    def fake_run_shell(self, cmd, timeout=30):
+        captured["cmd"] = cmd
+        return CommandResult(0, "", "")
+
+    monkeypatch.setattr(SSHRunner, "run_shell", fake_run_shell)
+    runner = SSHRunner("monolith")
+
+    runner.run(["echo", "$HOME has a ' quote and a space"])
+
+    assert captured["cmd"] == "echo '$HOME has a '\"'\"' quote and a space'"
+    assert shlex.split(captured["cmd"]) == ["echo", "$HOME has a ' quote and a space"]
+
+
 def test_ssh_run_shell_timeout_raises_command_timeout_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
@@ -121,6 +145,39 @@ def test_start_background_tracks_pid_and_can_be_stopped(tmp_path):
 
     runner.stop(pid, timeout=2)
     time.sleep(0.1)
+    assert not runner.is_running(pid)
+
+
+def test_concurrent_stop_on_the_same_pid_does_not_raise(tmp_path):
+    # Found by the tier-5 adversarial smoke test: two force-stop requests
+    # for the same model landing concurrently (ordinary under real
+    # concurrent use, not a crafted attack) both pass the `_children.get`
+    # check, both successfully proc.wait(), then raced on `del
+    # self._children[pid]` - the second one raised KeyError, surfacing as
+    # a raw HTTP 500 to whoever's request lost the race.
+    import threading
+
+    runner = LocalRunner()
+    log_path = tmp_path / "proc.log"
+    pid_path = tmp_path / "proc.pid"
+    log_path.touch()
+    pid = runner.start_background(["sleep", "5"], log_path, pid_path)
+
+    errors = []
+
+    def stop_it():
+        try:
+            runner.stop(pid, timeout=2)
+        except Exception as exc:  # noqa: BLE001 - the whole point is "did this raise at all"
+            errors.append(exc)
+
+    threads = [threading.Thread(target=stop_it) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == []
     assert not runner.is_running(pid)
 
 

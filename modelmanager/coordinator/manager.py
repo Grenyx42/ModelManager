@@ -6,6 +6,7 @@ import shlex
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from ..config import Candidate, EngineConfig, GpuGroupConfig, ModelDefinition, R
 from ..errors import (
     AmbiguousNameError,
     ConflictError,
+    ForbiddenError,
     GpuGroupBusyError,
     LeaseConflictError,
     ModelManagerError,
@@ -25,7 +27,7 @@ from ..errors import (
     RegistryValidationError,
     ReloadUnavailableError,
 )
-from .state import StateStore
+from .state import ModelState, StateStore
 
 logger = logging.getLogger("modelmanager.manager")
 
@@ -93,53 +95,145 @@ class Manager:
         read or wrote itself - i.e. someone hand-edited it since."""
         return self._stat_key() != self._known_stat
 
-    def resolve_name(self, name: str) -> str:
+    def _candidate_system(self, candidate: Candidate) -> str:
+        """The system this candidate is actually served from - its engine's
+        system. Used wherever the question is "where do I connect/query to
+        act on this candidate" (the active host, which system's gpu_stats to
+        pull) - never for the access-scope check below, which has to
+        consider the gpu_group's system too."""
+        return self.registry.engines[candidate.engine].system
+
+    def _candidate_allowed(self, candidate: Candidate, allowed_systems: set[str] | None) -> bool:
+        """True unless `allowed_systems` is given and doesn't cover every
+        system this *specific* candidate touches. Being in scope is
+        evaluated per candidate, never per model - a model with one
+        candidate on a granted system and another on a private one is only
+        ever acted on/revealed through the granted candidate, regardless of
+        whether is_reachable()'s broader "has some in-scope candidate at
+        all" check is what decided the model itself is reachable in the
+        first place.
+
+        Checks BOTH the engine's system and the gpu_group's system - nothing
+        in the registry schema requires a candidate's engine and gpu_group
+        to agree on which system they're for, so a candidate "in scope" via
+        its engine's system alone could still let a grant trigger eviction
+        of whatever occupies a gpu_group nominally owned by a system it was
+        never granted (eviction is local state, not a remote call, so this
+        gap wouldn't even need the owner to misconfigure which engines a
+        private system's own candidates point at - any mismatch at all
+        between engine.system and gpu_group.system is enough)."""
+        if allowed_systems is None:
+            return True
+        return (
+            self._candidate_system(candidate) in allowed_systems
+            and self.registry.gpu_groups[candidate.gpu_group].system in allowed_systems
+        )
+
+    def _require_candidate_access(self, candidate: Candidate, allowed_systems: set[str] | None) -> None:
+        # Deliberately doesn't name the model/system in the message - same
+        # no-echo rule as routes._require_reachable: whether a dependency
+        # (not the name the caller actually asked about) is what's out of
+        # scope is exactly the kind of thing this must never reveal.
+        if not self._candidate_allowed(candidate, allowed_systems):
+            raise ForbiddenError("no access to the system backing this candidate")
+
+    def is_reachable(self, name: str, allowed_systems: set[str] | None, _stack: frozenset[str] = frozenset()) -> bool:
+        """True if a scoped grant could ever actually ensure() this model:
+        at least one of its own candidates is in scope, AND every
+        dependency - transitively - is also reachable. This is the real
+        visibility/actionability test everywhere scoping decides whether a
+        grant gets to see or act on a model at all (routes._allowed_models,
+        _group_visible, GET /v1/config's model filtering, list/summary
+        filtering, and the single-model routes' own gate) - it replaces a
+        simpler "does this model have any candidate at all in an allowed
+        system" test, which only proves the model's OWN candidates include
+        one in scope and says nothing about whether it would ever actually
+        start.
+
+        A model whose own candidate is in scope but that depends on
+        something entirely outside the grant's systems can never actually
+        be ensured - treating it as "in scope" would let the grant see it
+        in listings and attempt actions on it that are structurally
+        guaranteed to fail, with the failure itself (a generic, name-free
+        ForbiddenError from deep inside ensure()'s/dry_run()'s depends_on
+        recursion) being the only signal that a hidden dependency exists.
+        Folding dependency reachability into the visibility test itself
+        means a model like this is simply never in scope to begin with -
+        not listed, not resolvable by substring, and any direct action on
+        its exact name gets the same generic 403 any other out-of-scope
+        resource would, with nothing to infer from the attempt that
+        wouldn't already be true of an ordinary access denial. Exactly the
+        same principle as _group_visible hiding a group entirely over one
+        out-of-scope member, applied to a model's dependency graph.
+
+        None (the owner token) is always reachable, matching every other
+        allowed_systems check's unrestricted-when-None convention. `_stack`
+        guards against infinite recursion - Registry._cross_references
+        already forbids depends_on cycles, so this is defense in depth,
+        not a case that should arise in practice."""
+        if allowed_systems is None:
+            return True
+        if name in _stack:
+            return False
+        definition = self.registry.models.get(name)
+        if definition is None:
+            return False
+        if not any(self._candidate_allowed(c, allowed_systems) for c in definition.candidates):
+            return False
+        stack = _stack | {name}
+        return all(self.is_reachable(dep, allowed_systems, stack) for dep in definition.depends_on)
+
+    def resolve_name(self, name: str, allowed_models: set[str] | None = None) -> str:
         """An exact model name always wins outright. Otherwise, a caller may
         give any case-insensitive substring of exactly one model's name (e.g.
         'agent' for 'agentflow-planner-3b') and get that one back - so CLI/API
         callers don't have to type a full, often-long model name. Raises
         NotFoundError for zero matches, AmbiguousNameError (->409) for more
-        than one."""
+        than one.
+
+        `allowed_models`, when given (a scoped grant's in-scope model names -
+        see routes._allowed_models), restricts the *substring* match pool to
+        those names: a grant can never learn of an out-of-scope model's
+        existence just by sending a short substring and reading the
+        "matches multiple models: ..." list back, which would otherwise leak
+        exactly what routes._require_reachable's own no-echo rule exists to
+        prevent. An exact name always resolves regardless of scope (unaffected
+        by this filter) - typing the full name you already know isn't a new
+        disclosure, and the caller still gets the identical 404 "unknown
+        model" (not a leaked list, and not distinguishable from a name that
+        truly doesn't exist) from _require_reachable right after."""
         if name in self.registry.models:
             return name
         needle = name.lower()
-        matches = sorted(n for n in self.registry.models if needle in n.lower())
+        matches = sorted(
+            n for n in self.registry.models
+            if needle in n.lower() and (allowed_models is None or n in allowed_models)
+        )
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
             raise AmbiguousNameError(f"{name!r} matches multiple models: {', '.join(matches)}")
         raise NotFoundError(f"unknown model {name!r}")
 
-    def model_systems(self, name: str) -> set[str]:
-        """Every system any of this model's candidates could run on - unlike
-        status()/logs()/log_location()/group_system_models() (which only
-        resolve the active-or-first candidate), this unions across all of
-        them. Used to decide whether a scoped grant (see grants.py) covers
-        this model at all - a model with candidates split across a granted
-        and a non-granted system is treated as in-scope if *any* candidate's
-        system is allowed (see routes._check_system_access)."""
-        name = self.resolve_name(name)
-        definition = self.registry.models[name]
-        systems: set[str] = set()
-        for candidate in definition.candidates:
-            systems.add(self.registry.engines[candidate.engine].system)
-            systems.add(self.registry.gpu_groups[candidate.gpu_group].system)
-        return systems
-
-    def ensure(self, name: str) -> EnsureResult:
-        name = self.resolve_name(name)
-        candidate, idx = self._ensure_loaded(name)
+    def ensure(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> EnsureResult:
+        name = self.resolve_name(name, allowed_models)
+        candidate, idx = self._ensure_loaded(name, allowed_systems)
         self.state.touch(name)
         return self._result(name, candidate, idx)
 
-    def acquire(self, name: str, ttl_seconds: float | None = None) -> AcquireResult:
+    def acquire(
+        self, name: str, ttl_seconds: float | None = None,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> AcquireResult:
         """Like ensure(), but also takes a time-boxed lease marking the model
         as actively in use: while any lease is held, it can never be
         auto-evicted or swapped out for another model, regardless of
         idle_timeout_seconds. Call release() when done, or let the lease
         expire (a safety net for a caller that crashes without releasing)."""
-        name = self.resolve_name(name)
-        candidate, idx = self._ensure_loaded(name)
+        name = self.resolve_name(name, allowed_models)
+        candidate, idx = self._ensure_loaded(name, allowed_systems)
         ttl = ttl_seconds if ttl_seconds is not None else DEFAULT_LEASE_TTL_SECONDS
         lease_id = uuid.uuid4().hex
         self.state.get(name).add_lease(lease_id, ttl)
@@ -147,9 +241,16 @@ class Manager:
         result = self._result(name, candidate, idx)
         return AcquireResult(host=result.host, port=result.port, candidate_index=idx, lease_id=lease_id, expires_in=ttl)
 
-    def release(self, name: str, lease_id: str | None = None) -> dict:
-        name = self.resolve_name(name)
+    def release(
+        self, name: str, lease_id: str | None = None,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
+        name = self.resolve_name(name, allowed_models)
         model_state = self.state.get(name)
+        if model_state.is_active:
+            definition = self.registry.models[name]
+            candidate = definition.candidates[model_state.active_candidate_index]
+            self._require_candidate_access(candidate, allowed_systems)
         if lease_id is None:
             released = model_state.clear_leases()
         else:
@@ -158,22 +259,35 @@ class Manager:
             self.state.touch(name)  # idle countdown starts from the moment of release, not the original acquire
         return {"released": released, "remaining_leases": len(model_state.leases)}
 
-    def _ensure_loaded(self, name: str) -> tuple[Candidate, int]:
+    def _ensure_loaded(self, name: str, allowed_systems: set[str] | None = None) -> tuple[Candidate, int]:
         definition = self.registry.models.get(name)
         if definition is None:
             raise NotFoundError(f"unknown model {name!r}")
+        if allowed_systems is not None and not any(
+            self._candidate_allowed(c, allowed_systems) for c in definition.candidates
+        ):
+            # Fails closed before even touching depends_on/state - is_reachable
+            # (what got this far in the first place, via routes._require_reachable)
+            # only proves *some* candidate is allowed, not this one.
+            raise ForbiddenError("no access to any system this model could run on")
 
         # Ensured outside _ensure_lock: each dependency's own ensure() takes
         # the lock itself (threading.Lock isn't reentrant), and a dependency
         # must be fully settled before this model's own decision is made, not
-        # merely queued behind it.
+        # merely queued behind it. allowed_systems (not allowed_models - a
+        # dependency is an exact registry key, never ambiguous) carries the
+        # same restriction into the dependency's own selection, so a grant
+        # scoped to system A can never cause a dependency-only model on
+        # private system B to be started as a side effect of ensuring
+        # something it does legitimately have access to.
         for dep in definition.depends_on:
-            self.ensure(dep)
+            self.ensure(dep, allowed_systems=allowed_systems)
 
         with self._ensure_lock:
             model_state = self.state.get(name)
             if model_state.is_active:
                 candidate = definition.candidates[model_state.active_candidate_index]
+                self._require_candidate_access(candidate, allowed_systems)
                 adapter = self.adapters.get(candidate.engine)
                 status = adapter.status(name, candidate)
                 if status.running:
@@ -182,10 +296,28 @@ class Manager:
 
             last_error: str | None = None
             for idx, candidate in enumerate(definition.candidates):
+                if not self._candidate_allowed(candidate, allowed_systems):
+                    continue
                 occupant = self.state.find_active_in_gpu_group(candidate.gpu_group, self.registry)
                 if occupant is not None and occupant != name:
                     occupant_def = self.registry.models[occupant]
                     occupant_state = self.state.get(occupant)
+                    occupant_candidate = occupant_def.candidates[occupant_state.active_candidate_index]
+                    # Naming the occupant below is only safe once it's
+                    # confirmed visible to this grant at all - is_reachable,
+                    # not just "is its current candidate's own system
+                    # allowed" (_candidate_allowed): a model can have an
+                    # in-scope candidate yet still be entirely unreachable
+                    # because of a dependency outside this grant's systems,
+                    # and that's exactly the kind of model is_reachable
+                    # elsewhere (GET /v1/models, GET /v1/config, ...) hides
+                    # completely - it must stay hidden here too, not leak
+                    # through a gpu_group-contention message.
+                    if not self.is_reachable(occupant, allowed_systems) or not self._candidate_allowed(
+                        occupant_candidate, allowed_systems
+                    ):
+                        last_error = "a candidate currently occupying this gpu_group can't be evicted with this credential"
+                        continue
                     if occupant_def.pinned:
                         last_error = f"gpu_group {candidate.gpu_group!r} occupied by pinned model {occupant!r}"
                         continue
@@ -212,7 +344,7 @@ class Manager:
                             f"(idle {idle_secs or 0:.0f}s, needs {idle_timeout}s to free)"
                         )
                         continue
-                    self.stop(occupant)
+                    self.stop(occupant, allowed_systems=allowed_systems)
 
                 adapter = self.adapters.get(candidate.engine)
                 actual_port = adapter.start(name, candidate)
@@ -226,22 +358,30 @@ class Manager:
 
             raise GpuGroupBusyError(last_error or f"no available candidate for {name!r}")
 
-    def dry_run(self, name: str) -> dict:
+    def dry_run(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         """Read-only preview of what ensure(name) would do right now: which
         candidate it would pick (or keep), whether that requires evicting
         another model, or why it's currently blocked - without starting,
         stopping, or persisting anything. Deliberately a separate read path
         from _ensure_loaded() (not a shared helper) so this can never
         accidentally take a real action; it mirrors that method's selection
-        logic by hand. Recurses into depends_on first (safe - no cycles are
-        possible, see Registry._cross_references)."""
-        name = self.resolve_name(name)
+        logic by hand (including the same per-candidate `allowed_systems`
+        scoping - see _ensure_loaded). Recurses into depends_on first (safe -
+        no cycles are possible, see Registry._cross_references)."""
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
-        deps = [self.dry_run(dep) for dep in definition.depends_on]
+        if allowed_systems is not None and not any(
+            self._candidate_allowed(c, allowed_systems) for c in definition.candidates
+        ):
+            raise ForbiddenError("no access to any system this model could run on")
+        deps = [self.dry_run(dep, allowed_systems=allowed_systems) for dep in definition.depends_on]
 
         model_state = self.state.get(name)
         if model_state.is_active:
             candidate = definition.candidates[model_state.active_candidate_index]
+            self._require_candidate_access(candidate, allowed_systems)
             adapter = self.adapters.get(candidate.engine)
             status = adapter.status(name, candidate)
             if status.running:
@@ -249,10 +389,22 @@ class Manager:
 
         last_error: str | None = None
         for idx, candidate in enumerate(definition.candidates):
+            if not self._candidate_allowed(candidate, allowed_systems):
+                continue
             occupant = self.state.find_active_in_gpu_group(candidate.gpu_group, self.registry)
             if occupant is not None and occupant != name:
                 occupant_def = self.registry.models[occupant]
                 occupant_state = self.state.get(occupant)
+                occupant_candidate = occupant_def.candidates[occupant_state.active_candidate_index]
+                # Same is_reachable requirement as _ensure_loaded's eviction
+                # check - never name the occupant unless it's actually
+                # visible to this grant at all (not just its current
+                # candidate's own system).
+                if not self.is_reachable(occupant, allowed_systems) or not self._candidate_allowed(
+                    occupant_candidate, allowed_systems
+                ):
+                    last_error = "a candidate currently occupying this gpu_group can't be evicted with this credential"
+                    continue
                 if occupant_def.pinned:
                     last_error = f"gpu_group {candidate.gpu_group!r} occupied by pinned model {occupant!r}"
                     continue
@@ -344,18 +496,23 @@ class Manager:
         except ModelManagerError:
             return False
 
-    def dry_run_group(self, name: str, allowed_models: set[str] | None = None) -> dict:
-        """allowed_models, when given (see routes._check_system_access's
+    def dry_run_group(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
+        """allowed_models, when given (see routes._require_reachable's
         callers), restricts which members are actually dry-run - a member
         outside it gets a "forbidden" result instead of being attempted, same
-        best-effort-per-member shape as everything else here."""
+        best-effort-per-member shape as everything else here. allowed_systems
+        is passed straight through to each member's own dry_run(), which is
+        what actually rejects a member whose *specific* active/selected
+        candidate - as opposed to just any candidate - sits outside scope."""
         results = []
         for model_name in self._group_names(name):
             if allowed_models is not None and model_name not in allowed_models:
                 results.append({"model": model_name, "action": "forbidden", "detail": "not permitted for this credential"})
                 continue
             try:
-                results.append(self.dry_run(model_name))
+                results.append(self.dry_run(model_name, allowed_systems=allowed_systems))
             except ModelManagerError as exc:
                 results.append({"model": model_name, "action": "error", "detail": str(exc)})
         return {"group": name, "results": results}
@@ -403,62 +560,95 @@ class Manager:
             return {"ok": False, "errors": errors}
         return {"ok": True, "errors": []}
 
-    def stop(self, name: str, force: bool = False) -> None:
-        name = self.resolve_name(name)
+    def stop(
+        self, name: str, force: bool = False,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> None:
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
         model_state = self.state.get(name)
         if not model_state.is_active:
             return
+        candidate = definition.candidates[model_state.active_candidate_index]
+        self._require_candidate_access(candidate, allowed_systems)
         if not force and model_state.is_busy():
             raise LeaseConflictError(
                 f"{name!r} has {len(model_state.leases)} active lease(s); pass force=true to stop anyway"
             )
-        candidate = definition.candidates[model_state.active_candidate_index]
         adapter = self.adapters.get(candidate.engine)
         adapter.stop(name, candidate)
         self.state.set_active(name, None)
 
-    def status(self, name: str) -> dict:
-        name = self.resolve_name(name)
+    def status(self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None) -> dict:
+        """Unlike ensure/stop/logs/verify (which hard-fail with ForbiddenError
+        on an out-of-scope active candidate - they're actions, and a route
+        handles one model at a time), this is read-only and also feeds
+        list_models() across every model in one pass - so an out-of-scope
+        active candidate is masked here instead: `active` reads false and
+        `candidate` stays null, rather than blowing up one entry's status
+        among many. `gpu_groups` is filtered the same way so a private
+        system's gpu_group name is never named to a grant that can't see it,
+        even via a model it does otherwise have some access to. When the
+        model is actually active on a masked candidate, `in_use`/
+        `lease_count`/`last_used`/`idle_seconds` are masked right along with
+        it - a grant must see the exact same values it would for a model
+        that simply isn't running at all, never a side-channel telling it a
+        private system is busy right now, or when it was last touched."""
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
         model_state = self.state.get(name)
+        visible_candidate = None
+        hidden_active = False
+        if model_state.is_active:
+            active_candidate = definition.candidates[model_state.active_candidate_index]
+            if self._candidate_allowed(active_candidate, allowed_systems):
+                visible_candidate = active_candidate
+            else:
+                hidden_active = True
         entry = {
             "name": name,
             "pinned": definition.pinned,
             "idle_timeout_seconds": definition.idle_timeout_seconds,
-            "active": model_state.is_active,
-            "last_used": model_state.last_used.isoformat() if model_state.last_used else None,
-            "idle_seconds": model_state.idle_seconds(),
-            "in_use": model_state.is_busy(),
-            "lease_count": len(model_state.leases),
-            # Every gpu_group any candidate could land in, always populated (not
-            # just while active) so callers can see which models compete for the
-            # same slot before anything is actually running.
-            "gpu_groups": list(dict.fromkeys(c.gpu_group for c in definition.candidates)),
+            "active": visible_candidate is not None,
+            "last_used": None if hidden_active else (
+                model_state.last_used.isoformat() if model_state.last_used else None
+            ),
+            "idle_seconds": None if hidden_active else model_state.idle_seconds(),
+            "in_use": False if hidden_active else model_state.is_busy(),
+            "lease_count": 0 if hidden_active else len(model_state.leases),
+            # Every gpu_group any *allowed* candidate could land in, always
+            # populated (not just while active) so callers can see which
+            # models compete for the same slot before anything is actually
+            # running.
+            "gpu_groups": list(dict.fromkeys(
+                c.gpu_group for c in definition.candidates if self._candidate_allowed(c, allowed_systems)
+            )),
             "candidate": None,
         }
-        if model_state.is_active:
-            candidate = definition.candidates[model_state.active_candidate_index]
+        if visible_candidate is not None:
             entry["candidate"] = {
-                "engine": candidate.engine,
-                "gpu_group": candidate.gpu_group,
-                "host": self.registry.systems[self.registry.engines[candidate.engine].system].resolved_host(),
-                "port": model_state.active_port if model_state.active_port is not None else candidate.port,
+                "engine": visible_candidate.engine,
+                "gpu_group": visible_candidate.gpu_group,
+                "host": self.registry.systems[self._candidate_system(visible_candidate)].resolved_host(),
+                "port": model_state.active_port if model_state.active_port is not None else visible_candidate.port,
             }
         return entry
 
-    def list_models(self) -> list[dict]:
-        return [self.status(name) for name in self.registry.models]
+    def list_models(self, allowed_systems: set[str] | None = None) -> list[dict]:
+        return [self.status(name, allowed_systems=allowed_systems) for name in self.registry.models]
 
-    def verify(self, name: str, timeout: float = 30.0) -> dict:
+    def verify(
+        self, name: str, timeout: float = 30.0,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         """Push a tiny real inference request straight at the engine's own
         endpoint (ensuring it's loaded first). status()/list_models() only
         prove the process is running and listening on its port - not that the
         model actually loaded correctly or the engine's internals aren't
         wedged - so this is the only check that proves end-to-end liveness."""
-        name = self.resolve_name(name)
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
-        result = self.ensure(name)
+        result = self.ensure(name, allowed_systems=allowed_systems)
         candidate = definition.candidates[result.candidate_index]
         engine = self.registry.engines[candidate.engine]
         base = f"http://{result.host}:{result.port}"
@@ -517,41 +707,52 @@ class Manager:
             raise NotFoundError(f"unknown group {name!r}")
         return self.registry.groups[name]
 
-    def ensure_group(self, name: str, allowed_models: set[str] | None = None) -> dict:
+    def ensure_group(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         """Best-effort: ensure() every member model, independently. One
         member's failure (offline box, gpu_group conflict, etc.) never stops
         the rest from being attempted - the point of a group is "start my
         usual set of models", not an all-or-nothing transaction.
 
-        allowed_models, when given (see routes._check_system_access's
+        allowed_models, when given (see routes._require_reachable's
         callers), restricts which members are actually ensured - a member
         outside it is reported as a forbidden per-member result instead of
-        being attempted, same transparency as any other per-member failure."""
+        being attempted, same transparency as any other per-member failure.
+        allowed_systems is passed straight through to each member's own
+        ensure(), which is what actually rejects (as an ordinary per-member
+        error here) a member whose *specific* candidate sits outside scope
+        even though the model itself passed the broader allowed_models test."""
         results = []
         for model_name in self._group_names(name):
             if allowed_models is not None and model_name not in allowed_models:
                 results.append({"name": model_name, "ok": False, "host": None, "port": None, "detail": "not permitted for this credential"})
                 continue
             try:
-                result = self.ensure(model_name)
+                result = self.ensure(model_name, allowed_systems=allowed_systems)
                 results.append({"name": model_name, "ok": True, "host": result.host, "port": result.port, "detail": None})
             except (ModelManagerError, RuntimeError) as exc:
                 results.append({"name": model_name, "ok": False, "host": None, "port": None, "detail": str(exc)})
         return {"group": name, "results": results}
 
-    def verify_group(self, name: str, timeout: float = 30.0, allowed_models: set[str] | None = None) -> dict:
+    def verify_group(
+        self, name: str, timeout: float = 30.0,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         results = []
         for model_name in self._group_names(name):
             if allowed_models is not None and model_name not in allowed_models:
                 results.append({"name": model_name, "ok": False, "latency_ms": None, "detail": "not permitted for this credential"})
                 continue
             try:
-                results.append(self.verify(model_name, timeout=timeout))
+                results.append(self.verify(model_name, timeout=timeout, allowed_systems=allowed_systems))
             except (ModelManagerError, RuntimeError) as exc:
                 results.append({"name": model_name, "ok": False, "latency_ms": None, "detail": str(exc)})
         return {"group": name, "results": results}
 
-    def group_system_models(self, name: str, allowed_models: set[str] | None = None) -> dict[str, list[str]]:
+    def group_system_models(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict[str, list[str]]:
         """Which system each group member is running on (or would run on, if
         not currently active) - same candidate-selection rule as logs()/
         log_location(): the active candidate if running, else the first
@@ -561,7 +762,12 @@ class Manager:
         allowed_models, when given, silently drops members outside it -
         unlike the other group_* methods there's no per-member "forbidden"
         result here, since this only feeds group_stats' per-*system*
-        results, not a per-model one."""
+        results, not a per-model one. allowed_systems additionally drops a
+        member whose active/selected candidate's *specific* system isn't
+        allowed, even though allowed_models (any-candidate-in-scope) let the
+        model itself through - same gap group_stats' own caller still has
+        to defend against for the system bucket this produces, but dropping
+        it here too means it never even appears in a system's model list."""
         result: dict[str, list[str]] = {}
         for model_name in self._group_names(name):
             if allowed_models is not None and model_name not in allowed_models:
@@ -570,33 +776,66 @@ class Manager:
             model_state = self.state.get(model_name)
             idx = model_state.active_candidate_index if model_state.is_active else 0
             candidate = definition.candidates[idx]
-            system_name = self.registry.engines[candidate.engine].system
+            if not self._candidate_allowed(candidate, allowed_systems):
+                continue
+            system_name = self._candidate_system(candidate)
             result.setdefault(system_name, []).append(model_name)
         return result
 
-    def stop_group(self, name: str, force: bool = False, allowed_models: set[str] | None = None) -> dict:
+    def stop_group(
+        self, name: str, force: bool = False,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         results = []
         for model_name in self._group_names(name):
             if allowed_models is not None and model_name not in allowed_models:
                 results.append({"name": model_name, "ok": False, "detail": "not permitted for this credential"})
                 continue
             try:
-                self.stop(model_name, force=force)
+                self.stop(model_name, force=force, allowed_systems=allowed_systems)
                 results.append({"name": model_name, "ok": True, "detail": None})
             except ModelManagerError as exc:
                 results.append({"name": model_name, "ok": False, "detail": str(exc)})
         return {"group": name, "results": results}
 
-    def logs(self, name: str, lines: int = 200) -> str:
-        name = self.resolve_name(name)
+    def _logs_candidate_index(
+        self, definition: ModelDefinition, model_state: ModelState, allowed_systems: set[str] | None,
+    ) -> int:
+        """Which candidate logs()/log_location() read from: the active one
+        if running, else the first one - but when inactive, prefer the
+        first candidate this grant can actually see over a hardcoded 0.
+        Candidate 0 isn't necessarily in scope just because the model
+        overall is (e.g. the same build available locally and on another
+        machine - Candidate's own docstring gives this as the point of
+        having more than one) - falling back to a scope-blind 0 would
+        produce a false 403 for an inactive, multi-candidate model a grant
+        legitimately has access to via a later candidate. If NO candidate
+        is allowed, this still returns 0 - _require_candidate_access right
+        after correctly rejects it either way."""
+        if model_state.is_active:
+            return model_state.active_candidate_index
+        if allowed_systems is not None:
+            for idx, candidate in enumerate(definition.candidates):
+                if self._candidate_allowed(candidate, allowed_systems):
+                    return idx
+        return 0
+
+    def logs(
+        self, name: str, lines: int = 200,
+        allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> str:
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
         model_state = self.state.get(name)
-        idx = model_state.active_candidate_index if model_state.is_active else 0
+        idx = self._logs_candidate_index(definition, model_state, allowed_systems)
         candidate = definition.candidates[idx]
+        self._require_candidate_access(candidate, allowed_systems)
         adapter = self.adapters.get(candidate.engine)
         return adapter.logs(name, candidate, lines)
 
-    def log_location(self, name: str) -> dict:
+    def log_location(
+        self, name: str, allowed_models: set[str] | None = None, allowed_systems: set[str] | None = None,
+    ) -> dict:
         """Where a model's logs actually live, for a caller that wants to
         tail them directly (e.g. `ssh <host> tail -f <paths...>`) instead of
         polling GET .../logs. `paths` is empty when there's no discrete file
@@ -604,11 +843,12 @@ class Manager:
         journalctl only); it can have more than one entry - a remote Windows
         launch keeps stdout/stderr as separate files, and the caller needs
         both to see everything."""
-        name = self.resolve_name(name)
+        name = self.resolve_name(name, allowed_models)
         definition = self.registry.models[name]
         model_state = self.state.get(name)
-        idx = model_state.active_candidate_index if model_state.is_active else 0
+        idx = self._logs_candidate_index(definition, model_state, allowed_systems)
         candidate = definition.candidates[idx]
+        self._require_candidate_access(candidate, allowed_systems)
         engine = self.registry.engines[candidate.engine]
         system = self.registry.systems[engine.system]
         adapter = self.adapters.get(candidate.engine)
@@ -712,6 +952,24 @@ class Manager:
                 on_commit()
             self._persist(new_registry)
             return getattr(self.registry, section)[name]
+
+    @contextmanager
+    def consistent_registry_read(self):
+        """For a multi-step read that has to see one single, unchanging
+        registry snapshot across all of its steps - currently just
+        routes.get_config(), which dumps the whole registry and then makes
+        several separate is_reachable()/visibility decisions against it.
+        reload_from_disk()/_upsert() mutate systems/engines/gpu_groups/
+        models in place under `_write_lock`, with no synchronization on the
+        read side otherwise; a reload landing between the dump and a later
+        visibility check could leave the dumped data (pre-reload) and the
+        visibility decision (post-reload) disagreeing about, for example,
+        whether a model's dependency is still out of scope - exactly the
+        kind of mismatch that would leak a dependency's name through a
+        response whose own filtering logic assumed they'd always agree.
+        Holding the same lock for the whole read closes that window."""
+        with self._write_lock:
+            yield
 
     def reload_from_disk(self) -> dict:
         """Re-read registry.json (e.g. after a hand edit, including a delete)
