@@ -1,6 +1,7 @@
 # ModelManager
 
-ModelManager tracks which LLM models are actually running, on which
+ModelManager tracks which models (LLMs, classifiers, stable diffusion,
+whatever you've got) are actually running, on which
 machines, and starts/stops/swaps them on request - so an app (or you) can
 ask for a model by name (`"qwen-72b"`) and get back a live `host:port` to
 talk to, without caring whether it's already loaded, which box it's on, or
@@ -8,7 +9,8 @@ what has to be evicted first to make room. An Omarchy bar plugin sits on top
 of the same REST API for a point-and-click view of what's running.
 
 It works solo - a handful of your own GPU boxes (Linux, Windows), each
-running one or more LLM engines (Ollama, custom llama.cpp builds) - and it
+running one or more engines (Ollama, custom llama.cpp builds, or your own
+Python/custom process) - and it
 works shared: grant someone else on your Tailscale tailnet or LAN scoped,
 revocable access to specific systems, and they manage models on your
 hardware (or you on theirs) from their own panel or CLI, without either
@@ -17,9 +19,10 @@ GPU capacity with people you trust are both first-class here, not a
 bolt-on - see [Sharing access with another person](docs/deployment.md#sharing-access-with-another-person).
 
 It grew out of my own home-lab setup: a handful of GPU boxes (Linux,
-Windows), each able to run one or more LLM engines (Ollama, custom llama.cpp
-builds), and apps that needed one stable name to call instead of remembering
-which box happens to have `qwen-72b` loaded this week.
+Windows), each able to run one or more engines (Ollama, custom llama.cpp
+builds, or your own Python/custom process), and apps that needed one stable
+name to call instead of remembering which box happens to have `qwen-72b`
+loaded this week.
 
 > Built mostly by pairing with Claude (Anthropic's Claude Code) over a long
 > series of sessions - most of the code, tests, and docs started there. I've
@@ -92,7 +95,7 @@ Apps, or the Omarchy bar plugin
   Coordinator (FastAPI)  ── one JSON registry: systems, engines, models
         │
         ▼
-  EngineAdapter (Ollama | llama.cpp)  ──  Runner (local subprocess | SSH+PowerShell)
+  EngineAdapter (Ollama | llama.cpp | process)  ──  Runner (local subprocess | SSH+PowerShell)
         │
         ▼
   Your GPU boxes - Linux local or remote, Windows always over SSH
@@ -107,16 +110,18 @@ directly. Nothing proxies through the coordinator after that handoff.
 |---|---|
 | Python 3.11+ | runs the coordinator/CLI |
 | [Omarchy](https://omarchy.org) (Hyprland + omarchy-shell) | only if you want the bar plugin - skip it and just use the CLI/REST API otherwise |
-| Ollama and/or your own llama.cpp (`llama-server`) builds | on whichever machines you want to manage |
+| Ollama, your own llama.cpp (`llama-server`) builds, and/or any other process you point it at | on whichever machines you want to manage |
 | Non-interactive SSH (key auth, no passphrase prompt) | only for Windows boxes under your control - the coordinator controls them over SSH + PowerShell, no agent to install |
 
 ## Pieces
 
 - `modelmanager/` - the Python coordinator: a JSON registry of
   systems/engines/models/rules, a FastAPI REST service, and the
-  local/SSH+PowerShell control paths for Ollama and llama.cpp.
+  local/SSH+PowerShell control paths for Ollama, llama.cpp, and any other
+  process.
 - `scripts/windows/agent.ps1` - deployed to each Windows box; the coordinator
-  invokes it over SSH to start/stop/status/log native llama.cpp processes.
+  invokes it over SSH to start/stop/status/log native llama.cpp (or other
+  process) instances.
 - `manifest.json` / `Panel.qml` - a Quickshell/Omarchy bar-widget plugin that
   shells out to the `modelmanager` CLI for a bar icon + panel. These live at
   the repo root (not a subdirectory) because the Omarchy plugin marketplace

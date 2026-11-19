@@ -1,6 +1,6 @@
 ---
 name: modelmanager
-description: Control ModelManager - start/stop/verify LLM models and edit its systems/engines/gpu_groups/models registry via REST/CLI.
+description: Control ModelManager - start/stop/verify models (LLMs, classifiers, stable diffusion, etc.) and edit its systems/engines/gpu_groups/models registry via REST/CLI.
 ---
 
 # ModelManager

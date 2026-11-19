@@ -11,7 +11,8 @@ ModelManager runs as a single coordinator process on one machine (in my case,
 the same box running the Omarchy desktop/plugin) and reaches every other
 machine (`systemB`, `systemC`, ...) over SSH. There's exactly one `registry.json`,
 one process deciding what starts/stops/evicts, and the other machines run
-nothing but an engine (Ollama, llama.cpp) and an SSH server.
+nothing but an engine (Ollama, llama.cpp, or any other process) and an SSH
+server.
 
 The alternative would be a coordinator/plugin instance running on *every*
 machine, each one talking to its peers instead of SSHing into them. That
